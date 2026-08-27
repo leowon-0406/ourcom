@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OURCOM - 우리들만의 소통망</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: linear-gradient(135deg, #eef2ff, #f8fafc);
+            font-family: Arial, "Noto Sans KR", sans-serif;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 420px;
+            padding: 20px;
+        }
+
+        .login-box {
+            background: white;
+            padding: 40px 32px;
+            border-radius: 24px;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.12);
+        }
+
+        .logo {
+            text-align: center;
+            font-size: 42px;
+            font-weight: 800;
+            margin-bottom: 8px;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #777;
+            margin-bottom: 35px;
+        }
+
+        .input-group {
+            margin-bottom: 16px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 7px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        input {
+            width: 100%;
+            padding: 15px;
+            margin: 0;
+            border: 1px solid #d9dce3;
+            border-radius: 12px;
+            font-size: 16px;
+            outline: none;
+        }
+
+        input:focus {
+            border-color: #4f46e5;
+            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+        }
+
+        button {
+            width: 100%;
+            padding: 15px;
+            margin-top: 8px;
+            border: none;
+            border-radius: 12px;
+            background: #111827;
+            color: white;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #374151;
+        }
+
+        .message {
+            min-height: 22px;
+            margin-top: 16px;
+            text-align: center;
+            font-size: 14px;
+        }
+
+        .footer {
+            text-align: center;
+            color: #999;
+            font-size: 12px;
+            margin-top: 25px;
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="container">
+    <div class="login-box">
+
+        <div class="logo">
+            OURCOM
+        </div>
+
+        <div class="subtitle">
+            우리들만의 소통망
+        </div>
+
+        <div class="input-group">
+            <label for="username">아이디</label>
+
+            <input
+                id="username"
+                type="text"
+                placeholder="아이디 입력"
+                autocomplete="username"
+            >
+        </div>
+
+        <div class="input-group">
+            <label for="password">비밀번호</label>
+
+            <input
+                id="password"
+                type="password"
+                placeholder="비밀번호 입력"
+                autocomplete="current-password"
+                onkeydown="handleEnter(event)"
+            >
+        </div>
+
+        <button onclick="login()">
+            로그인
+        </button>
+
+        <div id="message" class="message"></div>
+
+        <div class="footer">
+            OURCOM · 우리들만의 소통망
+        </div>
+
+    </div>
+</div>
+
+<script>
+
+async function login() {
+
+    const id =
+        document.getElementById("username").value.trim();
+
+    const password =
+        document.getElementById("password").value;
+
+    const message =
+        document.getElementById("message");
+
+    if (!id || !password) {
+        message.style.color = "#ef4444";
+        message.textContent =
+            "아이디와 비밀번호를 입력해주세요.";
+        return;
+    }
+
+    message.style.color = "#777";
+    message.textContent = "로그인 중...";
+
+    try {
+
+        const response = await fetch("/api/login", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                id,
+                password
+            })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+
+            message.style.color = "#16a34a";
+            message.textContent =
+                `환영합니다, ${data.user.name}님!`;
+
+            setTimeout(() => {
+                window.location.href = "/main.html";
+            }, 500);
+
+        } else {
+
+            message.style.color = "#ef4444";
+            message.textContent = data.message;
+
+        }
+
+    } catch (error) {
+
+        console.error(error);
+
+        message.style.color = "#ef4444";
+        message.textContent =
+            "서버와 연결할 수 없습니다.";
+
+    }
+}
+
+function handleEnter(event) {
+
+    if (event.key === "Enter") {
+        login();
+    }
+
+}
+
+</script>
+
+</body>
+</html>

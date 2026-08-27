@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+
+<meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+>
+
+<title>OURCOM - 우리들만의 소통망</title>
+
+<style>
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    font-family:
+        Arial,
+        "Noto Sans KR",
+        sans-serif;
+
+    background: #f5f6f8;
+    color: #111827;
+}
+
+/* =========================
+   헤더
+========================= */
+
+.header {
+    height: 70px;
+
+    background: #111827;
+    color: white;
+
+    display: flex;
+    align-items: center;
+
+    padding: 0 25px;
+
+    font-size: 20px;
+    font-weight: bold;
+}
+
+.header-sub {
+    margin-left: 10px;
+
+    font-size: 12px;
+    font-weight: normal;
+
+    color: #9ca3af;
+}
+
+.logout {
+    margin-left: auto;
+
+    border: none;
+    border-radius: 10px;
+
+    padding: 9px 14px;
+
+    background: #374151;
+    color: white;
+
+    cursor: pointer;
+}
+
+.logout:hover {
+    background: #4b5563;
+}
+
+/* =========================
+   전체
+========================= */
+
+.container {
+    max-width: 900px;
+
+    margin: 35px auto;
+
+    padding: 0 20px;
+}
+
+/* =========================
+   환영
+========================= */
+
+.welcome {
+    margin-bottom: 25px;
+}
+
+.welcome h1 {
+    margin: 0;
+
+    font-size: 28px;
+}
+
+.welcome p {
+    margin-top: 8px;
+
+    color: #6b7280;
+}
+
+/* =========================
+   메뉴
+========================= */
+
+.menu-grid {
+    display: grid;
+
+    grid-template-columns:
+        repeat(2, 1fr);
+
+    gap: 18px;
+}
+
+.menu {
+    background: white;
+
+    border-radius: 18px;
+
+    padding: 25px;
+
+    min-height: 150px;
+
+    cursor: pointer;
+
+    box-shadow:
+        0 5px 20px
+        rgba(0,0,0,0.05);
+
+    transition: 0.18s;
+
+    position: relative;
+}
+
+.menu:hover {
+    transform: translateY(-3px);
+
+    box-shadow:
+        0 10px 25px
+        rgba(0,0,0,0.08);
+}
+
+.menu-icon {
+    font-size: 35px;
+
+    margin-bottom: 15px;
+}
+
+.menu-title {
+    font-size: 19px;
+
+    font-weight: bold;
+}
+
+.menu-description {
+    margin-top: 7px;
+
+    color: #6b7280;
+
+    font-size: 14px;
+
+    line-height: 1.5;
+}
+
+/* =========================
+   관리자
+========================= */
+
+.admin {
+    border: 2px solid #e5e7eb;
+}
+
+.admin .menu-icon {
+    font-size: 30px;
+}
+
+/* =========================
+   사용자 정보
+========================= */
+
+.user-box {
+    margin-top: 25px;
+
+    background: white;
+
+    border-radius: 18px;
+
+    padding: 20px;
+
+    box-shadow:
+        0 5px 20px
+        rgba(0,0,0,0.05);
+}
+
+.user-title {
+    font-weight: bold;
+
+    margin-bottom: 8px;
+}
+
+.user-info {
+    color: #6b7280;
+
+    font-size: 14px;
+}
+
+/* =========================
+   모바일
+========================= */
+
+@media (max-width: 650px) {
+
+    .menu-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .header {
+        padding: 0 15px;
+    }
+
+    .header-sub {
+        display: none;
+    }
+
+    .welcome h1 {
+        font-size: 24px;
+    }
+
+}
+
+</style>
+</head>
+
+
+<body>
+
+
+<!-- =========================
+     헤더
+========================= -->
+
+<div class="header">
+
+    <span>OURCOM</span>
+
+    <span class="header-sub">
+        우리들만의 소통망
+    </span>
+
+    <button
+        class="logout"
+        onclick="logout()"
+    >
+        로그아웃
+    </button>
+
+</div>
+
+
+<!-- =========================
+     메인
+========================= -->
+
+<div class="container">
+
+
+    <div class="welcome">
+
+        <h1 id="welcome">
+            불러오는 중...
+        </h1>
+
+        <p>
+            OURCOM에서 친구들과 소통해보세요.
+        </p>
+
+    </div>
+
+
+    <!-- =========================
+         메뉴
+    ========================= -->
+
+    <div class="menu-grid">
+
+
+        <!-- 전체 채팅 -->
+
+        <div
+            class="menu"
+            onclick="openGroupChat()"
+        >
+
+            <div class="menu-icon">
+                💬
+            </div>
+
+            <div class="menu-title">
+                전체 채팅
+            </div>
+
+            <div class="menu-description">
+                OURCOM의 모든 친구들과
+                함께 대화할 수 있습니다.
+            </div>
+
+        </div>
+
+
+        <!-- 1:1 채팅 -->
+
+        <div
+            class="menu"
+            onclick="openFriends()"
+        >
+
+            <div class="menu-icon">
+                👤
+            </div>
+
+            <div class="menu-title">
+                1:1 채팅
+            </div>
+
+            <div class="menu-description">
+                친구를 선택해서
+                개인적으로 대화할 수 있습니다.
+            </div>
+
+        </div>
+
+
+        <!-- 친구 -->
+
+        <div
+            class="menu"
+            onclick="openFriends()"
+        >
+
+            <div class="menu-icon">
+                👥
+            </div>
+
+            <div class="menu-title">
+                친구
+            </div>
+
+            <div class="menu-description">
+                등록된 친구를 확인하고
+                1:1 채팅을 시작할 수 있습니다.
+            </div>
+
+        </div>
+
+
+        <!-- 단체 채팅 만들기 -->
+
+        <div
+            class="menu"
+            onclick="openCreateGroup()"
+        >
+
+            <div class="menu-icon">
+                🗨️
+            </div>
+
+            <div class="menu-title">
+                단체 채팅 만들기
+            </div>
+
+            <div class="menu-description">
+                원하는 친구들을 선택해서
+                새로운 단체 채팅방을 만들 수 있습니다.
+            </div>
+
+        </div>
+
+
+        <!-- 관리자 -->
+
+        <div
+            id="adminMenu"
+            class="menu admin"
+            style="display:none"
+            onclick="openAdmin()"
+        >
+
+            <div class="menu-icon">
+                ⚙️
+            </div>
+
+            <div class="menu-title">
+                관리자
+            </div>
+
+            <div class="menu-description">
+                OURCOM 사용자 계정을
+                관리할 수 있습니다.
+            </div>
+
+        </div>
+
+
+    </div>
+
+
+    <!-- =========================
+         사용자 정보
+    ========================= -->
+
+    <div class="user-box">
+
+        <div class="user-title">
+            현재 로그인 정보
+        </div>
+
+        <div
+            id="userInfo"
+            class="user-info"
+        >
+            불러오는 중...
+        </div>
+
+    </div>
+
+
+</div>
+
+
+<script>
+
+/* ==================================================
+   로그인 확인
+================================================== */
+
+async function loadUser() {
+
+    try {
+
+        const response =
+            await fetch("/api/me");
+
+        const data =
+            await response.json();
+
+
+        if (!data.loggedIn) {
+
+            location.href = "/";
+
+            return;
+
+        }
+
+
+        const user =
+            data.user;
+
+
+        document.getElementById(
+            "welcome"
+        ).textContent =
+            `${user.name}님, 환영합니다!`;
+
+
+        document.getElementById(
+            "userInfo"
+        ).textContent =
+            `이름: ${user.name}  |  아이디: @${user.id}`;
+
+
+        /* 관리자만 관리자 메뉴 표시 */
+
+        if (user.role === "admin") {
+
+            document.getElementById(
+                "adminMenu"
+            ).style.display = "block";
+
+        }
+
+    }
+
+    catch (error) {
+
+        console.error(error);
+
+        location.href = "/";
+
+    }
+
+}
+
+
+/* ==================================================
+   전체 채팅
+================================================== */
+
+function openGroupChat() {
+
+    /*
+        group.html이 존재한다면
+        이 주소로 이동합니다.
+    */
+
+    location.href =
+        "/group.html";
+
+}
+
+
+/* ==================================================
+   친구 / 1:1 채팅
+================================================== */
+
+function openFriends() {
+
+    location.href =
+        "/friends.html";
+
+}
+
+
+/* ==================================================
+   단체 채팅 만들기
+================================================== */
+
+function openCreateGroup() {
+
+    /*
+        단체 채팅 선택 페이지
+    */
+
+    location.href =
+        "/group-create.html";
+
+}
+
+
+/* ==================================================
+   관리자
+================================================== */
+
+function openAdmin() {
+
+    location.href =
+        "/admin.html";
+
+}
+
+
+/* ==================================================
+   로그아웃
+================================================== */
+
+async function logout() {
+
+    try {
+
+        await fetch(
+            "/api/logout",
+            {
+                method: "POST"
+            }
+        );
+
+    }
+
+    catch (error) {
+
+        console.error(error);
+
+    }
+
+
+    location.href = "/";
+
+}
+
+
+/* ==================================================
+   시작
+================================================== */
+
+loadUser();
+
+</script>
+
+</body>
+</html>

@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>OURCOM - 친구</title>
+
+    <style>
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+
+            font-family:
+                Arial,
+                "Noto Sans KR",
+                sans-serif;
+
+            background: #f5f6f8;
+        }
+
+        .header {
+            height: 70px;
+
+            background: #111827;
+            color: white;
+
+            display: flex;
+            align-items: center;
+
+            padding: 0 20px;
+
+            font-size: 20px;
+            font-weight: bold;
+        }
+
+        .back {
+            margin-left: auto;
+
+            border: none;
+            border-radius: 10px;
+
+            padding: 10px 15px;
+
+            background: #374151;
+            color: white;
+
+            cursor: pointer;
+        }
+
+        .container {
+            max-width: 700px;
+
+            margin: 30px auto;
+
+            padding: 0 20px;
+        }
+
+        .box {
+            background: white;
+
+            border-radius: 18px;
+
+            padding: 25px;
+
+            box-shadow:
+                0 5px 20px
+                rgba(0,0,0,0.05);
+        }
+
+        h2 {
+            margin-top: 0;
+        }
+
+        .friend {
+            display: flex;
+
+            align-items: center;
+
+            padding: 16px;
+
+            border-bottom:
+                1px solid #eeeeee;
+
+            cursor: pointer;
+
+            border-radius: 12px;
+
+            transition: 0.15s;
+        }
+
+        .friend:hover {
+            background: #f3f4f6;
+        }
+
+        .friend:last-child {
+            border-bottom: none;
+        }
+
+        .avatar {
+            width: 45px;
+            height: 45px;
+
+            display: flex;
+            align-items: center;
+            justify-content: center;
+
+            border-radius: 50%;
+
+            background: #e5e7eb;
+
+            font-size: 20px;
+
+            margin-right: 15px;
+        }
+
+        .friend-name {
+            font-weight: bold;
+        }
+
+        .friend-id {
+            margin-top: 4px;
+
+            font-size: 13px;
+
+            color: #9ca3af;
+        }
+
+        .arrow {
+            margin-left: auto;
+
+            color: #9ca3af;
+
+            font-size: 20px;
+        }
+
+        .empty {
+            padding: 30px;
+
+            text-align: center;
+
+            color: #999;
+        }
+
+        .loading {
+            padding: 30px;
+
+            text-align: center;
+
+            color: #999;
+        }
+
+    </style>
+
+</head>
+
+
+<body>
+
+<div class="header">
+
+    👥 OURCOM 친구
+
+    <button
+        class="back"
+        onclick="location.href='/main.html'"
+    >
+        ← 홈
+    </button>
+
+</div>
+
+
+<div class="container">
+
+    <div class="box">
+
+        <h2>
+            친구 목록
+        </h2>
+
+        <div
+            id="friends"
+            class="loading"
+        >
+            친구 목록을 불러오는 중...
+        </div>
+
+    </div>
+
+</div>
+
+
+<script>
+
+async function loadFriends() {
+
+    try {
+
+        const meResponse =
+            await fetch("/api/me");
+
+        const me =
+            await meResponse.json();
+
+        if (!me.loggedIn) {
+
+            location.href = "/";
+
+            return;
+
+        }
+
+
+        const response =
+            await fetch("/api/users");
+
+        const data =
+            await response.json();
+
+
+        const container =
+            document.getElementById(
+                "friends"
+            );
+
+
+        if (
+            !data.success ||
+            data.users.length === 0
+        ) {
+
+            container.className = "empty";
+
+            container.textContent =
+                "아직 등록된 친구가 없습니다.";
+
+            return;
+
+        }
+
+
+        container.className = "";
+
+
+        container.innerHTML =
+            data.users.map(user => `
+
+                <div
+                    class="friend"
+                    onclick="openChat('${user.id}')"
+                >
+
+                    <div class="avatar">
+                        👤
+                    </div>
+
+                    <div>
+
+                        <div class="friend-name">
+                            ${escapeHtml(user.name)}
+                        </div>
+
+                        <div class="friend-id">
+                            @${escapeHtml(user.id)}
+                        </div>
+
+                    </div>
+
+                    <div class="arrow">
+                        ›
+                    </div>
+
+                </div>
+
+            `).join("");
+
+    }
+
+    catch (error) {
+
+        console.error(error);
+
+        document.getElementById(
+            "friends"
+        ).textContent =
+            "친구 목록을 불러오지 못했습니다.";
+
+    }
+
+}
+
+
+function openChat(id) {
+
+    location.href =
+        `/private.html?id=${encodeURIComponent(id)}`;
+
+}
+
+
+function escapeHtml(text) {
+
+    const div =
+        document.createElement("div");
+
+    div.textContent = text;
+
+    return div.innerHTML;
+
+}
+
+
+loadFriends();
+
+</script>
+
+</body>
+
+</html>

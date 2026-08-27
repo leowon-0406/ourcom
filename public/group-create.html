@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+
+<meta charset="UTF-8">
+
+<meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+>
+
+<title>OURCOM - 단체 채팅</title>
+
+<style>
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+
+    font-family:
+        Arial,
+        "Noto Sans KR",
+        sans-serif;
+
+    background: #f5f6f8;
+
+    color: #111827;
+}
+
+.header {
+    height: 70px;
+
+    background: #111827;
+
+    color: white;
+
+    display: flex;
+
+    align-items: center;
+
+    padding: 0 20px;
+
+    font-size: 19px;
+
+    font-weight: bold;
+}
+
+.back {
+    margin-left: auto;
+
+    border: none;
+
+    border-radius: 10px;
+
+    padding: 9px 14px;
+
+    background: #374151;
+
+    color: white;
+
+    cursor: pointer;
+}
+
+.container {
+    max-width: 700px;
+
+    margin: 30px auto;
+
+    padding: 0 20px;
+}
+
+.box {
+    background: white;
+
+    border-radius: 18px;
+
+    padding: 25px;
+
+    box-shadow:
+        0 5px 20px
+        rgba(0,0,0,0.05);
+}
+
+h2 {
+    margin-top: 0;
+}
+
+label {
+    display: block;
+
+    margin-top: 18px;
+
+    margin-bottom: 7px;
+
+    font-weight: bold;
+
+    font-size: 14px;
+}
+
+input[type="text"] {
+    width: 100%;
+
+    padding: 13px;
+
+    border:
+        1px solid #ddd;
+
+    border-radius: 10px;
+
+    outline: none;
+
+    font-size: 15px;
+}
+
+.friend {
+    display: flex;
+
+    align-items: center;
+
+    padding: 13px;
+
+    margin-top: 8px;
+
+    border:
+        1px solid #eeeeee;
+
+    border-radius: 12px;
+
+    cursor: pointer;
+}
+
+.friend:hover {
+    background: #f9fafb;
+}
+
+.friend input {
+    width: 18px;
+    height: 18px;
+}
+
+.avatar {
+    margin-left: 10px;
+
+    margin-right: 12px;
+
+    font-size: 23px;
+}
+
+.name {
+    font-weight: bold;
+}
+
+.id {
+    margin-top: 3px;
+
+    color: #9ca3af;
+
+    font-size: 12px;
+}
+
+.create {
+    width: 100%;
+
+    margin-top: 25px;
+
+    padding: 14px;
+
+    border: none;
+
+    border-radius: 12px;
+
+    background: #111827;
+
+    color: white;
+
+    font-size: 15px;
+
+    font-weight: bold;
+
+    cursor: pointer;
+}
+
+.create:hover {
+    background: #1f2937;
+}
+
+.info {
+    margin-top: 8px;
+
+    color: #9ca3af;
+
+    font-size: 12px;
+}
+
+#rooms {
+    margin-top: 35px;
+
+    padding-top: 20px;
+
+    border-top:
+        1px solid #eeeeee;
+}
+
+.room {
+    display: flex;
+
+    align-items: center;
+
+    padding: 15px;
+
+    margin-top: 8px;
+
+    background: #f9fafb;
+
+    border-radius: 12px;
+
+    cursor: pointer;
+}
+
+.room:hover {
+    background: #f3f4f6;
+}
+
+.room-icon {
+    font-size: 25px;
+
+    margin-right: 13px;
+}
+
+.room-name {
+    font-weight: bold;
+}
+
+.room-members {
+    margin-top: 4px;
+
+    color: #9ca3af;
+
+    font-size: 12px;
+}
+
+.arrow {
+    margin-left: auto;
+
+    color: #9ca3af;
+
+    font-size: 22px;
+}
+
+.empty {
+    color: #999;
+
+    text-align: center;
+
+    padding: 20px;
+}
+
+</style>
+
+</head>
+
+
+<body>
+
+
+<div class="header">
+
+    👥 단체 채팅
+
+    <button
+        class="back"
+        onclick="location.href='/main.html'"
+    >
+        ← 홈
+    </button>
+
+</div>
+
+
+<div class="container">
+
+<div class="box">
+
+    <h2>
+        새 단체 채팅 만들기
+    </h2>
+
+    <label>
+        채팅방 이름
+    </label>
+
+    <input
+        id="roomName"
+        type="text"
+        placeholder="예: 우리반 채팅방"
+        maxlength="50"
+    >
+
+
+    <label>
+        친구 선택
+    </label>
+
+    <div class="info">
+        함께 채팅할 친구를 여러 명 선택할 수 있습니다.
+    </div>
+
+
+    <div id="friends">
+        친구 목록을 불러오는 중...
+    </div>
+
+
+    <button
+        class="create"
+        onclick="createRoom()"
+    >
+        단체 채팅방 만들기
+    </button>
+
+
+    <div id="rooms">
+
+        <h2>
+            내가 참여 중인 채팅방
+        </h2>
+
+        <div id="roomList">
+            불러오는 중...
+        </div>
+
+    </div>
+
+</div>
+
+</div>
+
+
+<script>
+
+let friends = [];
+
+
+/* =================================
+   친구 불러오기
+================================= */
+
+async function loadFriends() {
+
+    const meResponse =
+        await fetch("/api/me");
+
+    const me =
+        await meResponse.json();
+
+
+    if (!me.loggedIn) {
+
+        location.href = "/";
+
+        return;
+
+    }
+
+
+    const response =
+        await fetch("/api/users");
+
+    const data =
+        await response.json();
+
+
+    friends =
+        data.users || [];
+
+
+    const container =
+        document.getElementById(
+            "friends"
+        );
+
+
+    if (friends.length === 0) {
+
+        container.innerHTML = `
+            <div class="empty">
+                선택할 친구가 없습니다.
+            </div>
+        `;
+
+        return;
+
+    }
+
+
+    container.innerHTML =
+        friends.map(user => `
+
+            <label
+                class="friend"
+            >
+
+                <input
+                    type="checkbox"
+                    value="${escapeHtml(user.id)}"
+                >
+
+                <div class="avatar">
+                    👤
+                </div>
+
+                <div>
+
+                    <div class="name">
+                        ${escapeHtml(user.name)}
+                    </div>
+
+                    <div class="id">
+                        @${escapeHtml(user.id)}
+                    </div>
+
+                </div>
+
+            </label>
+
+        `).join("");
+
+}
+
+
+/* =================================
+   단체 채팅방 만들기
+================================= */
+
+async function createRoom() {
+
+    const name =
+        document
+            .getElementById("roomName")
+            .value
+            .trim();
+
+
+    if (!name) {
+
+        alert(
+            "채팅방 이름을 입력해주세요."
+        );
+
+        return;
+
+    }
+
+
+    const selected =
+        [...document.querySelectorAll(
+            '#friends input[type="checkbox"]:checked'
+        )]
+        .map(
+            input => input.value
+        );
+
+
+    if (selected.length === 0) {
+
+        alert(
+            "최소 한 명의 친구를 선택해주세요."
+        );
+
+        return;
+
+    }
+
+
+    try {
+
+        const response =
+            await fetch(
+                "/api/chat-rooms",
+                {
+                    method: "POST",
+
+                    headers: {
+                        "Content-Type":
+                            "application/json"
+                    },
+
+                    body: JSON.stringify({
+                        name,
+                        memberIds:
+                            selected
+                    })
+                }
+            );
+
+
+        const data =
+            await response.json();
+
+
+        if (!data.success) {
+
+            alert(
+                data.message ||
+                "채팅방을 만들 수 없습니다."
+            );
+
+            return;
+
+        }
+
+
+        location.href =
+            `/group-room.html?id=${data.room.id}`;
+
+    }
+
+    catch (error) {
+
+        console.error(error);
+
+        alert(
+            "채팅방 생성 중 오류가 발생했습니다."
+        );
+
+    }
+
+}
+
+
+/* =================================
+   내 채팅방 목록
+================================= */
+
+async function loadRooms() {
+
+    try {
+
+        const response =
+            await fetch(
+                "/api/chat-rooms"
+            );
+
+
+        const data =
+            await response.json();
+
+
+        const container =
+            document.getElementById(
+                "roomList"
+            );
+
+
+        if (
+            !data.success ||
+            data.rooms.length === 0
+        ) {
+
+            container.innerHTML = `
+                <div class="empty">
+                    아직 참여 중인 단체 채팅방이 없습니다.
+                </div>
+            `;
+
+            return;
+
+        }
+
+
+        container.innerHTML =
+            data.rooms.map(room => `
+
+                <div
+                    class="room"
+                    onclick="openRoom(${room.id})"
+                >
+
+                    <div class="room-icon">
+                        👥
+                    </div>
+
+                    <div>
+
+                        <div class="room-name">
+                            ${escapeHtml(room.name)}
+                        </div>
+
+                        <div class="room-members">
+                            ${room.memberCount}명 참여
+                        </div>
+
+                    </div>
+
+                    <div class="arrow">
+                        ›
+                    </div>
+
+                </div>
+
+            `).join("");
+
+    }
+
+    catch (error) {
+
+        console.error(error);
+
+    }
+
+}
+
+
+function openRoom(id) {
+
+    location.href =
+        `/group-room.html?id=${id}`;
+
+}
+
+
+function escapeHtml(text) {
+
+    const div =
+        document.createElement("div");
+
+    div.textContent = text;
+
+    return div.innerHTML;
+
+}
+
+
+loadFriends();
+
+loadRooms();
+
+</script>
+
+</body>
+
+</html>
