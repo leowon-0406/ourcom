@@ -726,6 +726,7 @@ io.on("connection", socket => {
     socket.on("group message", guard(async value => {
         const data = typeof value === "string" ? { text: value } : value;
         const text = safeText(data && data.text);
+        const clientId = safeText(data && data.clientId, 80) || null;
         if (!text) return;
         const requestedReplyId = Number(data && data.replyToId);
         let reply = null;
@@ -749,7 +750,8 @@ io.on("connection", socket => {
             time,
             replyToId: reply && reply.id,
             replyToName: reply && reply.replyToName,
-            replyToText: reply && reply.replyToText
+            replyToText: reply && reply.replyToText,
+            clientId
         });
     }));
 
@@ -795,6 +797,7 @@ io.on("connection", socket => {
         if (!data || typeof data.toId !== "string") return;
         const toId = data.toId;
         const text = safeText(data.text);
+        const clientId = safeText(data.clientId, 80) || null;
         if (!text || toId === userId) return;
         const target = await query("SELECT 1 FROM users WHERE id = $1", [toId]);
         if (!target.rowCount) return;
@@ -825,7 +828,8 @@ io.on("connection", socket => {
             time,
             replyToId: reply && reply.id,
             replyToName: reply && reply.replyToName,
-            replyToText: reply && reply.replyToText
+            replyToText: reply && reply.replyToText,
+            clientId
         };
         io.to(`private:${userId}`).to(`private:${toId}`)
             .emit("private message", message);
@@ -857,6 +861,7 @@ io.on("connection", socket => {
     socket.on("chat room message", guard(async data => {
         const roomId = Number(data && data.roomId);
         const text = safeText(data && data.text);
+        const clientId = safeText(data && data.clientId, 80) || null;
         const requestedReplyId = Number(data && data.replyToId);
         if (!Number.isInteger(roomId) || !text) return;
         const member = await query(
@@ -889,7 +894,8 @@ io.on("connection", socket => {
             time,
             replyToId: reply && reply.id,
             replyToName: reply && reply.replyToName,
-            replyToText: reply && reply.replyToText
+            replyToText: reply && reply.replyToText,
+            clientId
         });
     }));
 });

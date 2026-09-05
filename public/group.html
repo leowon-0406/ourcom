@@ -94,6 +94,9 @@ body {
 
 }
 
+.message.pending { opacity: .62; }
+.message.failed .time { color: #ef4444; font-weight: bold; }
+
 .name {
 
     font-size: 13px;
@@ -418,6 +421,25 @@ let socket = null;
 
 let replyingTo = null;
 
+let readCountTimer = null;
+
+function scheduleReadCountUpdate() {
+    clearTimeout(readCountTimer);
+    readCountTimer = setTimeout(updateReadCounts, 120);
+}
+
+function watchPendingMessage(clientId) {
+    setTimeout(() => {
+        const target = Array.from(document.querySelectorAll(".message[data-client-id]"))
+            .find(element => element.dataset.clientId === clientId);
+        if (!target) return;
+        target.classList.remove("pending");
+        target.classList.add("failed");
+        const time = target.querySelector(".time");
+        if (time) time.textContent = "전송 지연";
+    }, 8000);
+}
+
 function startReply(message) {
     replyingTo = { id: message.id, name: message.name, text: message.text };
     document.getElementById("replyPreviewName").textContent = `${replyingTo.name}님에게 답장`;
@@ -503,6 +525,14 @@ function createMessageElement(
     wrapper.dataset.messageId =
         message.id;
 
+    if (message.clientId) {
+        wrapper.dataset.clientId = message.clientId;
+    }
+
+    if (message.pending) {
+        wrapper.classList.add("pending");
+    }
+
 
     if (
         message.userId ===
@@ -587,6 +617,7 @@ function createMessageElement(
     replyButton.className = "reply-button";
     replyButton.textContent = "↩ 답장";
     replyButton.onclick = () => startReply(message);
+    replyButton.disabled = Boolean(message.pending);
     wrapper.appendChild(replyButton);
 
 
@@ -790,29 +821,15 @@ function escapeHtml(text) {
    현재 화면의 메시지를 읽음 처리
 ===================================== */
 
-async function markMessagesRead() {
+async function markMessagesRead(messages) {
 
     if (!socket) {
         return;
     }
 
 
-    const response =
-        await fetch(
-            "/api/group-messages"
-        );
-
-    const data =
-        await response.json();
-
-
-    if (!data.success) {
-        return;
-    }
-
-
     const ids =
-        data.messages
+        (Array.isArray(messages) ? messages : [])
             .filter(
                 message =>
                     message.userId !==
@@ -831,6 +848,8 @@ async function markMessagesRead() {
             ids
         );
 
+    } else {
+        scheduleReadCountUpdate();
     }
 
 }
@@ -879,8 +898,7 @@ async function startChat() {
                 addMessage
             );
 
-
-            updateReadCounts();
+            markMessagesRead(history);
 
         }
     );
@@ -893,13 +911,19 @@ async function startChat() {
     socket.on(
         "group message",
         message => {
+            const pending = Array.from(document.querySelectorAll(".message[data-client-id]"))
+                .find(element => element.dataset.clientId === message.clientId);
 
-            addMessage(message);
-
-            updateReadCounts();
+            if (pending && message.userId === currentUser.id) {
+                pending.replaceWith(createMessageElement(message));
+            } else {
+                addMessage(message);
+            }
 
             if (message.userId !== currentUser.id) {
-                markMessagesRead();
+                markMessagesRead([message]);
+            } else {
+                scheduleReadCountUpdate();
             }
 
         }
@@ -914,7 +938,7 @@ async function startChat() {
         "read-status-update",
         () => {
 
-            updateReadCounts();
+            scheduleReadCountUpdate();
 
         }
     );
@@ -940,14 +964,38 @@ async function startChat() {
             return;
         }
 
+        if (!socket || !socket.connected) {
+            alert("채팅 서버에 연결 중입니다. 잠시 후 다시 보내주세요.");
+            return;
+        }
+
+        const clientId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        const reply = replyingTo;
+
+        addMessage({
+            id: `pending-${clientId}`,
+            clientId,
+            pending: true,
+            userId: currentUser.id,
+            name: currentUser.name,
+            text,
+            time: "전송 중",
+            replyToId: reply ? reply.id : null,
+            replyToName: reply ? reply.name : null,
+            replyToText: reply ? reply.text : null
+        });
+
 
         socket.emit(
             "group message",
             {
                 text,
-                replyToId: replyingTo ? replyingTo.id : null
+                replyToId: reply ? reply.id : null,
+                clientId
             }
         );
+
+        watchPendingMessage(clientId);
 
 
         input.value = "";
@@ -989,11 +1037,6 @@ async function startChat() {
      * 채팅방에 들어왔으므로
      * 상대방 메시지를 읽음 처리
      */
-
-    setTimeout(
-        markMessagesRead,
-        500
-    );
 
 }
 

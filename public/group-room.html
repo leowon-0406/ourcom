@@ -106,6 +106,9 @@ body {
     margin-bottom: 15px;
 }
 
+.message.pending { opacity: .62; }
+.message.failed .time { color: #ef4444; font-weight: bold; }
+
 .message.mine {
     text-align: right;
 }
@@ -352,6 +355,25 @@ let roomMembers = [];
 
 let replyingTo = null;
 
+let readCountTimer = null;
+
+function scheduleReadCountUpdate() {
+    clearTimeout(readCountTimer);
+    readCountTimer = setTimeout(updateRoomReadCounts, 120);
+}
+
+function watchPendingMessage(clientId) {
+    setTimeout(() => {
+        const target = Array.from(document.querySelectorAll(".message[data-client-id]"))
+            .find(element => element.dataset.clientId === clientId);
+        if (!target) return;
+        target.classList.remove("pending");
+        target.classList.add("failed");
+        const time = target.querySelector(".time");
+        if (time) time.textContent = "전송 지연";
+    }, 8000);
+}
+
 function startReply(message) {
     replyingTo = { id: message.id, name: message.userName, text: message.text };
     document.getElementById("replyPreviewName").textContent = `${replyingTo.name}님에게 답장`;
@@ -530,6 +552,14 @@ function addMessage(message) {
     div.dataset.messageId =
         message.id;
 
+    if (message.clientId) {
+        div.dataset.clientId = message.clientId;
+    }
+
+    if (message.pending) {
+        div.classList.add("pending");
+    }
+
 
     if (
         message.userId ===
@@ -604,6 +634,7 @@ function addMessage(message) {
     replyButton.className = "reply-button";
     replyButton.textContent = "↩ 답장";
     replyButton.onclick = () => startReply(message);
+    replyButton.disabled = Boolean(message.pending);
     div.appendChild(replyButton);
 
 
@@ -633,13 +664,16 @@ async function markRoomMessagesRead(messages) {
     const ids = (Array.isArray(messages) ? messages : [])
         .filter(message => message.userId !== currentUser.id)
         .map(message => message.id);
-    if (!ids.length) return;
+    if (!ids.length) {
+        scheduleReadCountUpdate();
+        return;
+    }
     await fetch(`/api/chat-rooms/${roomId}/read`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messageIds: ids })
     });
-    await updateRoomReadCounts();
+    scheduleReadCountUpdate();
 }
 
 async function showUnreadUsers(messageId) {
@@ -734,7 +768,6 @@ async function startChat() {
                 addMessage
             );
 
-            updateRoomReadCounts();
             markRoomMessagesRead(data.messages);
 
         }
@@ -753,14 +786,20 @@ async function startChat() {
             }
 
 
-            addMessage(
-                message
-            );
+            const pending = Array.from(document.querySelectorAll(".message[data-client-id]"))
+                .find(element => element.dataset.clientId === message.clientId);
 
-            updateRoomReadCounts();
+            if (pending && message.userId === currentUser.id) {
+                pending.remove();
+                addMessage(message);
+            } else {
+                addMessage(message);
+            }
 
             if (message.userId !== currentUser.id) {
                 markRoomMessagesRead([message]);
+            } else {
+                scheduleReadCountUpdate();
             }
 
         }
@@ -768,7 +807,7 @@ async function startChat() {
 
     socket.on(
         "chat-room-read-update",
-        updateRoomReadCounts
+        scheduleReadCountUpdate
     );
 
 
@@ -837,15 +876,40 @@ function sendMessage() {
         return;
     }
 
+    if (!socket || !socket.connected) {
+        alert("채팅 서버에 연결 중입니다. 잠시 후 다시 보내주세요.");
+        return;
+    }
+
+    const clientId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const reply = replyingTo;
+
+    addMessage({
+        id: `pending-${clientId}`,
+        clientId,
+        pending: true,
+        roomId,
+        userId: currentUser.id,
+        userName: currentUser.name,
+        text,
+        time: "전송 중",
+        replyToId: reply ? reply.id : null,
+        replyToName: reply ? reply.name : null,
+        replyToText: reply ? reply.text : null
+    });
+
 
     socket.emit(
         "chat room message",
         {
             roomId,
             text,
-            replyToId: replyingTo ? replyingTo.id : null
+            replyToId: reply ? reply.id : null,
+            clientId
         }
     );
+
+    watchPendingMessage(clientId);
 
 
     input.value = "";
