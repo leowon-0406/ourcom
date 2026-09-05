@@ -558,7 +558,7 @@ function addMessage(message) {
     div.dataset.messageId =
         message.id;
 
-    if (message.clientId) {
+    if (message.clientId && message.pending) {
         div.dataset.clientId = message.clientId;
     }
 

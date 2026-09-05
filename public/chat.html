@@ -525,7 +525,7 @@ function createMessageElement(
     wrapper.dataset.messageId =
         message.id;
 
-    if (message.clientId) {
+    if (message.clientId && message.pending) {
         wrapper.dataset.clientId = message.clientId;
     }
 
