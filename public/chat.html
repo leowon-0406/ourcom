@@ -175,6 +175,34 @@ body {
 
 }
 
+.reply-button {
+    margin-left: 7px; padding: 3px 7px; border: 1px solid #d1d5db;
+    border-radius: 8px; background: white; color: #4b5563;
+    font-size: 11px; cursor: pointer;
+}
+
+.reply-reference {
+    display: block; width: 100%; margin-bottom: 7px; padding: 7px 9px;
+    border: none; border-left: 3px solid #818cf8; border-radius: 6px;
+    background: rgba(99, 102, 241, .10); color: inherit;
+    text-align: left; cursor: pointer;
+}
+
+.reply-reference strong, .reply-reference span { display: block; }
+.reply-reference span { opacity: .75; font-size: 12px; }
+
+.reply-preview {
+    display: none; align-items: center; justify-content: space-between;
+    padding: 9px 15px; border-top: 1px solid #ddd;
+    background: #f5f3ff; font-size: 13px;
+}
+
+.reply-preview strong, .reply-preview span { display: block; }
+.reply-preview span { color: #6b7280; }
+.reply-preview button { border: 0; background: transparent; font-size: 22px; cursor: pointer; }
+.reply-highlight { animation: replyFlash 1.4s ease; }
+@keyframes replyFlash { 50% { background: #fef3c7; } }
+
 .input-area {
 
     display: flex;
@@ -322,6 +350,13 @@ body {
         class="messages"
     ></div>
 
+    <div id="replyPreview" class="reply-preview">
+        <div>
+            <strong id="replyPreviewName"></strong>
+            <span id="replyPreviewText"></span>
+        </div>
+        <button type="button" onclick="cancelReply()" aria-label="답장 취소">×</button>
+    </div>
 
     <div class="input-area">
 
@@ -380,6 +415,45 @@ body {
 let currentUser = null;
 
 let socket = null;
+
+let replyingTo = null;
+
+function startReply(message) {
+    replyingTo = { id: message.id, name: message.name, text: message.text };
+    document.getElementById("replyPreviewName").textContent = `${replyingTo.name}님에게 답장`;
+    document.getElementById("replyPreviewText").textContent = replyingTo.text;
+    document.getElementById("replyPreview").style.display = "flex";
+    document.getElementById("messageInput").focus();
+}
+
+function cancelReply() {
+    replyingTo = null;
+    document.getElementById("replyPreview").style.display = "none";
+}
+
+function scrollToMessage(messageId) {
+    const target = document.querySelector(`[data-message-id="${Number(messageId)}"]`);
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    target.classList.remove("reply-highlight");
+    void target.offsetWidth;
+    target.classList.add("reply-highlight");
+    setTimeout(() => target.classList.remove("reply-highlight"), 1400);
+}
+
+function appendReplyReference(bubble, message) {
+    if (!message.replyToId) return;
+    const reference = document.createElement("button");
+    reference.type = "button";
+    reference.className = "reply-reference";
+    const name = document.createElement("strong");
+    name.textContent = message.replyToName || "원문";
+    const text = document.createElement("span");
+    text.textContent = message.replyToText || "삭제된 메시지";
+    reference.append(name, text);
+    reference.onclick = () => scrollToMessage(message.replyToId);
+    bubble.appendChild(reference);
+}
 
 
 /* =====================================
@@ -458,8 +532,11 @@ function createMessageElement(
     bubble.className =
         "bubble";
 
-    bubble.textContent =
-        message.text;
+    appendReplyReference(bubble, message);
+
+    const messageText = document.createElement("span");
+    messageText.textContent = message.text;
+    bubble.appendChild(messageText);
 
 
     const time =
@@ -504,6 +581,13 @@ function createMessageElement(
 
 
     wrapper.appendChild(count);
+
+    const replyButton = document.createElement("button");
+    replyButton.type = "button";
+    replyButton.className = "reply-button";
+    replyButton.textContent = "↩ 답장";
+    replyButton.onclick = () => startReply(message);
+    wrapper.appendChild(replyButton);
 
 
     return wrapper;
@@ -855,11 +939,16 @@ async function startChat() {
 
         socket.emit(
             "group message",
-            text
+            {
+                text,
+                replyToId: replyingTo ? replyingTo.id : null
+            }
         );
 
 
         input.value = "";
+
+        cancelReply();
 
         input.focus();
 

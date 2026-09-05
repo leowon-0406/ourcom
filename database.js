@@ -108,6 +108,20 @@ async function initializeDatabase() {
             ON private_reads (user_id, message_id);
         CREATE INDEX IF NOT EXISTS group_room_members_user_idx
             ON group_room_members (user_id, room_id);
+
+        ALTER TABLE group_messages
+            ADD COLUMN IF NOT EXISTS reply_to_id BIGINT;
+        ALTER TABLE private_messages
+            ADD COLUMN IF NOT EXISTS reply_to_id BIGINT;
+        ALTER TABLE group_room_messages
+            ADD COLUMN IF NOT EXISTS reply_to_id BIGINT;
+
+        CREATE INDEX IF NOT EXISTS group_messages_reply_idx
+            ON group_messages (reply_to_id);
+        CREATE INDEX IF NOT EXISTS private_messages_reply_idx
+            ON private_messages (reply_to_id);
+        CREATE INDEX IF NOT EXISTS group_room_messages_reply_idx
+            ON group_room_messages (reply_to_id);
     `);
 }
 

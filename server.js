@@ -212,9 +212,12 @@ app.delete("/api/admin/users/:id", adminOnly, asyncHandler(async (req, res) => {
 
 app.get("/api/group-messages", requireLogin, asyncHandler(async (req, res) => {
     const result = await query(`
-        SELECT id::int, user_id AS "userId", user_name AS name, text, time
-        FROM group_messages
-        ORDER BY id ASC
+        SELECT m.id::int, m.user_id AS "userId", m.user_name AS name,
+               m.text, m.time, m.reply_to_id::int AS "replyToId",
+               reply.user_name AS "replyToName", reply.text AS "replyToText"
+        FROM group_messages m
+        LEFT JOIN group_messages reply ON reply.id = m.reply_to_id
+        ORDER BY m.id ASC
     `);
     res.json({ success: true, messages: result.rows });
 }));
@@ -291,12 +294,15 @@ app.get("/api/private-messages/:userId", requireLogin,
         }
 
         const result = await query(`
-            SELECT id::int, from_id AS "fromId", from_name AS "fromName",
-                   to_id AS "toId", text, time
-            FROM private_messages
-            WHERE (from_id = $1 AND to_id = $2)
-               OR (from_id = $2 AND to_id = $1)
-            ORDER BY id ASC
+            SELECT m.id::int, m.from_id AS "fromId", m.from_name AS "fromName",
+                   m.to_id AS "toId", m.text, m.time,
+                   m.reply_to_id::int AS "replyToId",
+                   reply.from_name AS "replyToName", reply.text AS "replyToText"
+            FROM private_messages m
+            LEFT JOIN private_messages reply ON reply.id = m.reply_to_id
+            WHERE (m.from_id = $1 AND m.to_id = $2)
+               OR (m.from_id = $2 AND m.to_id = $1)
+            ORDER BY m.id ASC
         `, [me, other]);
         res.json({ success: true, user: otherUser, messages: result.rows });
     })
@@ -307,6 +313,8 @@ app.post("/api/private-messages/:userId", requireLogin,
         const from = req.session.user;
         const toId = req.params.userId;
         const text = safeText(req.body.text);
+        const requestedReplyId = Number(req.body.replyToId);
+        let reply = null;
 
         if (!text) {
             return res.status(400).json({
@@ -323,19 +331,34 @@ app.post("/api/private-messages/:userId", requireLogin,
             });
         }
 
+        if (Number.isInteger(requestedReplyId)) {
+            const replyResult = await query(`
+                SELECT id::int, from_name AS "replyToName", text AS "replyToText"
+                FROM private_messages
+                WHERE id = $1
+                  AND ((from_id = $2 AND to_id = $3)
+                    OR (from_id = $3 AND to_id = $2))
+            `, [requestedReplyId, from.id, toId]);
+            reply = replyResult.rows[0] || null;
+        }
+
         const time = chatTime();
         const result = await query(`
-            INSERT INTO private_messages (from_id, from_name, to_id, text, time)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO private_messages
+                (from_id, from_name, to_id, text, time, reply_to_id)
+            VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id::int
-        `, [from.id, from.name, toId, text, time]);
+        `, [from.id, from.name, toId, text, time, reply && reply.id]);
         const message = {
             id: result.rows[0].id,
             fromId: from.id,
             fromName: from.name,
             toId,
             text,
-            time
+            time,
+            replyToId: reply && reply.id,
+            replyToName: reply && reply.replyToName,
+            replyToText: reply && reply.replyToText
         };
         io.to(`private:${from.id}`).to(`private:${toId}`)
             .emit("private message", message);
@@ -490,8 +513,13 @@ app.get("/api/chat-rooms/:roomId/messages", requireLogin,
             });
         }
         const result = await query(`
-            SELECT id::int, user_id AS "userId", user_name AS "userName", text, time
-            FROM group_room_messages WHERE room_id = $1 ORDER BY id ASC
+            SELECT m.id::int, m.user_id AS "userId", m.user_name AS "userName",
+                   m.text, m.time, m.reply_to_id::int AS "replyToId",
+                   reply.user_name AS "replyToName", reply.text AS "replyToText"
+            FROM group_room_messages m
+            LEFT JOIN group_room_messages reply ON reply.id = m.reply_to_id
+            WHERE m.room_id = $1
+            ORDER BY m.id ASC
         `, [roomId]);
         res.json({ success: true, messages: result.rows });
     })
@@ -555,26 +583,43 @@ io.on("connection", socket => {
     socket.on("join group", guard(async () => {
         socket.join("group");
         const result = await query(`
-            SELECT id::int, user_id AS "userId", user_name AS name, text, time
-            FROM group_messages ORDER BY id ASC
+            SELECT m.id::int, m.user_id AS "userId", m.user_name AS name,
+                   m.text, m.time, m.reply_to_id::int AS "replyToId",
+                   reply.user_name AS "replyToName", reply.text AS "replyToText"
+            FROM group_messages m
+            LEFT JOIN group_messages reply ON reply.id = m.reply_to_id
+            ORDER BY m.id ASC
         `);
         socket.emit("group history", result.rows);
     }));
 
     socket.on("group message", guard(async value => {
-        const text = safeText(value);
+        const data = typeof value === "string" ? { text: value } : value;
+        const text = safeText(data && data.text);
         if (!text) return;
+        const requestedReplyId = Number(data && data.replyToId);
+        let reply = null;
+        if (Number.isInteger(requestedReplyId)) {
+            const replyResult = await query(`
+                SELECT id::int, user_name AS "replyToName", text AS "replyToText"
+                FROM group_messages WHERE id = $1
+            `, [requestedReplyId]);
+            reply = replyResult.rows[0] || null;
+        }
         const time = chatTime();
         const result = await query(`
-            INSERT INTO group_messages (user_id, user_name, text, time)
-            VALUES ($1, $2, $3, $4) RETURNING id::int
-        `, [userId, socket.user.name, text, time]);
+            INSERT INTO group_messages (user_id, user_name, text, time, reply_to_id)
+            VALUES ($1, $2, $3, $4, $5) RETURNING id::int
+        `, [userId, socket.user.name, text, time, reply && reply.id]);
         io.to("group").emit("group message", {
             id: result.rows[0].id,
             userId,
             name: socket.user.name,
             text,
-            time
+            time,
+            replyToId: reply && reply.id,
+            replyToName: reply && reply.replyToName,
+            replyToText: reply && reply.replyToText
         });
     }));
 
@@ -600,12 +645,15 @@ io.on("connection", socket => {
         );
         if (!otherResult.rowCount) return;
         const result = await query(`
-            SELECT id::int, from_id AS "fromId", from_name AS "fromName",
-                   to_id AS "toId", text, time
-            FROM private_messages
-            WHERE (from_id = $1 AND to_id = $2)
-               OR (from_id = $2 AND to_id = $1)
-            ORDER BY id ASC
+            SELECT m.id::int, m.from_id AS "fromId", m.from_name AS "fromName",
+                   m.to_id AS "toId", m.text, m.time,
+                   m.reply_to_id::int AS "replyToId",
+                   reply.from_name AS "replyToName", reply.text AS "replyToText"
+            FROM private_messages m
+            LEFT JOIN private_messages reply ON reply.id = m.reply_to_id
+            WHERE (m.from_id = $1 AND m.to_id = $2)
+               OR (m.from_id = $2 AND m.to_id = $1)
+            ORDER BY m.id ASC
         `, [userId, otherId]);
         socket.emit("private history", {
             user: otherResult.rows[0],
@@ -620,18 +668,34 @@ io.on("connection", socket => {
         if (!text || toId === userId) return;
         const target = await query("SELECT 1 FROM users WHERE id = $1", [toId]);
         if (!target.rowCount) return;
+        const requestedReplyId = Number(data.replyToId);
+        let reply = null;
+        if (Number.isInteger(requestedReplyId)) {
+            const replyResult = await query(`
+                SELECT id::int, from_name AS "replyToName", text AS "replyToText"
+                FROM private_messages
+                WHERE id = $1
+                  AND ((from_id = $2 AND to_id = $3)
+                    OR (from_id = $3 AND to_id = $2))
+            `, [requestedReplyId, userId, toId]);
+            reply = replyResult.rows[0] || null;
+        }
         const time = chatTime();
         const result = await query(`
-            INSERT INTO private_messages (from_id, from_name, to_id, text, time)
-            VALUES ($1, $2, $3, $4, $5) RETURNING id::int
-        `, [userId, socket.user.name, toId, text, time]);
+            INSERT INTO private_messages
+                (from_id, from_name, to_id, text, time, reply_to_id)
+            VALUES ($1, $2, $3, $4, $5, $6) RETURNING id::int
+        `, [userId, socket.user.name, toId, text, time, reply && reply.id]);
         const message = {
             id: result.rows[0].id,
             fromId: userId,
             fromName: socket.user.name,
             toId,
             text,
-            time
+            time,
+            replyToId: reply && reply.id,
+            replyToName: reply && reply.replyToName,
+            replyToText: reply && reply.replyToText
         };
         io.to(`private:${userId}`).to(`private:${toId}`)
             .emit("private message", message);
@@ -649,8 +713,13 @@ io.on("connection", socket => {
         }
         socket.join(`chatroom:${roomId}`);
         const result = await query(`
-            SELECT id::int, user_id AS "userId", user_name AS "userName", text, time
-            FROM group_room_messages WHERE room_id = $1 ORDER BY id ASC
+            SELECT m.id::int, m.user_id AS "userId", m.user_name AS "userName",
+                   m.text, m.time, m.reply_to_id::int AS "replyToId",
+                   reply.user_name AS "replyToName", reply.text AS "replyToText"
+            FROM group_room_messages m
+            LEFT JOIN group_room_messages reply ON reply.id = m.reply_to_id
+            WHERE m.room_id = $1
+            ORDER BY m.id ASC
         `, [roomId]);
         socket.emit("chat room history", { roomId, messages: result.rows });
     }));
@@ -658,24 +727,39 @@ io.on("connection", socket => {
     socket.on("chat room message", guard(async data => {
         const roomId = Number(data && data.roomId);
         const text = safeText(data && data.text);
+        const requestedReplyId = Number(data && data.replyToId);
         if (!Number.isInteger(roomId) || !text) return;
         const member = await query(
             "SELECT 1 FROM group_room_members WHERE room_id = $1 AND user_id = $2",
             [roomId, userId]
         );
         if (!member.rowCount) return;
+        let reply = null;
+        if (Number.isInteger(requestedReplyId) && requestedReplyId > 0) {
+            const replyResult = await query(`
+                SELECT id::int, user_name AS "replyToName", text AS "replyToText"
+                FROM group_room_messages
+                WHERE id = $1 AND room_id = $2
+            `, [requestedReplyId, roomId]);
+            reply = replyResult.rows[0] || null;
+            if (!reply) return;
+        }
         const time = chatTime();
         const result = await query(`
-            INSERT INTO group_room_messages (room_id, user_id, user_name, text, time)
-            VALUES ($1, $2, $3, $4, $5) RETURNING id::int
-        `, [roomId, userId, socket.user.name, text, time]);
+            INSERT INTO group_room_messages
+                (room_id, user_id, user_name, text, time, reply_to_id)
+            VALUES ($1, $2, $3, $4, $5, $6) RETURNING id::int
+        `, [roomId, userId, socket.user.name, text, time, reply && reply.id]);
         io.to(`chatroom:${roomId}`).emit("chat room message", {
             id: result.rows[0].id,
             roomId,
             userId,
             userName: socket.user.name,
             text,
-            time
+            time,
+            replyToId: reply && reply.id,
+            replyToName: reply && reply.replyToName,
+            replyToText: reply && reply.replyToText
         });
     }));
 });
