@@ -379,7 +379,15 @@ app.post("/api/private-read", requireLogin, asyncHandler(async (req, res) => {
             WHERE id = ANY($1::bigint[]) AND to_id = $2
             ON CONFLICT DO NOTHING
         `, [ids, req.session.user.id]);
+        const senders = await query(`
+            SELECT DISTINCT from_id
+            FROM private_messages
+            WHERE id = ANY($1::bigint[]) AND to_id = $2
+        `, [ids, req.session.user.id]);
         io.to(`private:${req.session.user.id}`).emit("private-read-update");
+        senders.rows.forEach(row => {
+            io.to(`private:${row.from_id}`).emit("private-read-update");
+        });
     }
     res.json({ success: true });
 }));
@@ -400,6 +408,44 @@ app.get("/api/private-unread-counts", requireLogin,
         `, [me]);
         const counts = Object.fromEntries(result.rows.map(row => [row.id, row.count]));
         res.json({ success: true, counts });
+    })
+);
+
+app.get("/api/private-message-status/:userId", requireLogin,
+    asyncHandler(async (req, res) => {
+        const me = req.session.user.id;
+        const other = req.params.userId;
+        const result = await query(`
+            SELECT m.id::int,
+                   CASE WHEN r.message_id IS NULL THEN 1 ELSE 0 END AS count
+            FROM private_messages m
+            LEFT JOIN private_reads r
+              ON r.message_id = m.id AND r.user_id = m.to_id
+            WHERE (m.from_id = $1 AND m.to_id = $2)
+               OR (m.from_id = $2 AND m.to_id = $1)
+        `, [me, other]);
+        const counts = Object.fromEntries(
+            result.rows.map(row => [row.id, Number(row.count)])
+        );
+        res.json({ success: true, counts });
+    })
+);
+
+app.get("/api/private-message/:messageId/unread-users", requireLogin,
+    asyncHandler(async (req, res) => {
+        const messageId = Number(req.params.messageId);
+        const me = req.session.user.id;
+        const result = await query(`
+            SELECT u.id, u.name
+            FROM private_messages m
+            JOIN users u ON u.id = m.to_id
+            LEFT JOIN private_reads r
+              ON r.message_id = m.id AND r.user_id = m.to_id
+            WHERE m.id = $1
+              AND (m.from_id = $2 OR m.to_id = $2)
+              AND r.message_id IS NULL
+        `, [messageId, me]);
+        res.json({ success: true, users: result.rows });
     })
 );
 
@@ -522,6 +568,90 @@ app.get("/api/chat-rooms/:roomId/messages", requireLogin,
             ORDER BY m.id ASC
         `, [roomId]);
         res.json({ success: true, messages: result.rows });
+    })
+);
+
+app.post("/api/chat-rooms/:roomId/read", requireLogin,
+    asyncHandler(async (req, res) => {
+        const roomId = Number(req.params.roomId);
+        const userId = req.session.user.id;
+        const ids = Array.isArray(req.body.messageIds)
+            ? req.body.messageIds.map(Number).filter(Number.isInteger)
+            : [];
+        const member = await query(
+            "SELECT 1 FROM group_room_members WHERE room_id = $1 AND user_id = $2",
+            [roomId, userId]
+        );
+        if (!member.rowCount) {
+            return res.status(403).json({ success: false });
+        }
+        if (ids.length) {
+            await query(`
+                INSERT INTO group_room_reads (message_id, user_id)
+                SELECT id, $3 FROM group_room_messages
+                WHERE room_id = $1 AND id = ANY($2::bigint[]) AND user_id <> $3
+                ON CONFLICT DO NOTHING
+            `, [roomId, ids, userId]);
+            io.to(`chatroom:${roomId}`).emit("chat-room-read-update", { roomId });
+        }
+        res.json({ success: true });
+    })
+);
+
+app.get("/api/chat-rooms/:roomId/unread-counts", requireLogin,
+    asyncHandler(async (req, res) => {
+        const roomId = Number(req.params.roomId);
+        const userId = req.session.user.id;
+        const member = await query(
+            "SELECT 1 FROM group_room_members WHERE room_id = $1 AND user_id = $2",
+            [roomId, userId]
+        );
+        if (!member.rowCount) {
+            return res.status(403).json({ success: false });
+        }
+        const result = await query(`
+            SELECT m.id::int,
+                   GREATEST(
+                       (SELECT COUNT(*) FROM group_room_members WHERE room_id = $1)
+                       - 1 - COUNT(r.user_id),
+                       0
+                   )::int AS count
+            FROM group_room_messages m
+            LEFT JOIN group_room_reads r ON r.message_id = m.id
+            WHERE m.room_id = $1
+            GROUP BY m.id
+        `, [roomId]);
+        const counts = Object.fromEntries(result.rows.map(row => [row.id, row.count]));
+        res.json({ success: true, counts });
+    })
+);
+
+app.get("/api/chat-rooms/:roomId/message/:messageId/unread-users", requireLogin,
+    asyncHandler(async (req, res) => {
+        const roomId = Number(req.params.roomId);
+        const messageId = Number(req.params.messageId);
+        const userId = req.session.user.id;
+        const member = await query(
+            "SELECT 1 FROM group_room_members WHERE room_id = $1 AND user_id = $2",
+            [roomId, userId]
+        );
+        if (!member.rowCount) {
+            return res.status(403).json({ success: false });
+        }
+        const result = await query(`
+            SELECT members.user_id AS id, members.user_name AS name
+            FROM group_room_members members
+            JOIN group_room_messages m ON m.id = $2 AND m.room_id = $1
+            WHERE members.room_id = $1
+              AND members.user_id <> m.user_id
+              AND NOT EXISTS (
+                  SELECT 1 FROM group_room_reads reads
+                  WHERE reads.message_id = m.id
+                    AND reads.user_id = members.user_id
+              )
+            ORDER BY members.user_name
+        `, [roomId, messageId]);
+        res.json({ success: true, users: result.rows });
     })
 );
 

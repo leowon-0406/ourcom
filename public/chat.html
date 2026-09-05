@@ -898,6 +898,10 @@ async function startChat() {
 
             updateReadCounts();
 
+            if (message.userId !== currentUser.id) {
+                markMessagesRead();
+            }
+
         }
     );
 

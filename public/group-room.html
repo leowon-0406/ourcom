@@ -160,6 +160,20 @@ body {
     font-size: 11px; cursor: pointer;
 }
 
+.unread-count {
+    display: none; margin-left: 7px; color: #ef4444;
+    font-size: 12px; font-weight: bold; cursor: pointer;
+}
+
+.modal {
+    display: none; position: fixed; inset: 0; align-items: center;
+    justify-content: center; padding: 20px; background: rgba(0, 0, 0, .42);
+    z-index: 1000;
+}
+.modal-box { width: min(360px, 100%); padding: 22px; border-radius: 16px; background: white; }
+.modal-user { padding: 8px 0; border-bottom: 1px solid #eee; }
+.modal-close { width: 100%; margin-top: 16px; padding: 10px; border: 0; border-radius: 10px; cursor: pointer; }
+
 .reply-reference {
     display: block; width: 100%; margin-bottom: 7px; padding: 7px 9px;
     border: none; border-left: 3px solid #818cf8; border-radius: 6px;
@@ -312,6 +326,14 @@ body {
 
     </div>
 
+</div>
+
+<div id="unreadModal" class="modal" onclick="closeUnreadModal(event)">
+    <div class="modal-box">
+        <h3>안 읽은 사람</h3>
+        <div id="unreadUsers"></div>
+        <button class="modal-close" type="button" onclick="closeUnreadModal()">닫기</button>
+    </div>
 </div>
 
 
@@ -572,6 +594,11 @@ function addMessage(message) {
         time
     );
 
+    const unreadCount = document.createElement("span");
+    unreadCount.className = "unread-count";
+    unreadCount.onclick = () => showUnreadUsers(message.id);
+    div.appendChild(unreadCount);
+
     const replyButton = document.createElement("button");
     replyButton.type = "button";
     replyButton.className = "reply-button";
@@ -588,6 +615,54 @@ function addMessage(message) {
     container.scrollTop =
         container.scrollHeight;
 
+}
+
+async function updateRoomReadCounts() {
+    const response = await fetch(`/api/chat-rooms/${roomId}/unread-counts`);
+    const data = await response.json();
+    if (!data.success) return;
+    document.querySelectorAll(".message").forEach(element => {
+        const count = data.counts[Number(element.dataset.messageId)] || 0;
+        const countElement = element.querySelector(".unread-count");
+        countElement.textContent = count;
+        countElement.style.display = count > 0 ? "inline-block" : "none";
+    });
+}
+
+async function markRoomMessagesRead(messages) {
+    const ids = (Array.isArray(messages) ? messages : [])
+        .filter(message => message.userId !== currentUser.id)
+        .map(message => message.id);
+    if (!ids.length) return;
+    await fetch(`/api/chat-rooms/${roomId}/read`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messageIds: ids })
+    });
+    await updateRoomReadCounts();
+}
+
+async function showUnreadUsers(messageId) {
+    const response = await fetch(`/api/chat-rooms/${roomId}/message/${messageId}/unread-users`);
+    const data = await response.json();
+    const container = document.getElementById("unreadUsers");
+    container.innerHTML = "";
+    if (!data.success || data.users.length === 0) {
+        container.textContent = "모두 읽었습니다.";
+    } else {
+        data.users.forEach(user => {
+            const row = document.createElement("div");
+            row.className = "modal-user";
+            row.textContent = `🔴 ${user.name} (@${user.id})`;
+            container.appendChild(row);
+        });
+    }
+    document.getElementById("unreadModal").style.display = "flex";
+}
+
+function closeUnreadModal(event) {
+    if (event && event.target !== event.currentTarget) return;
+    document.getElementById("unreadModal").style.display = "none";
 }
 
 
@@ -659,6 +734,9 @@ async function startChat() {
                 addMessage
             );
 
+            updateRoomReadCounts();
+            markRoomMessagesRead(data.messages);
+
         }
     );
 
@@ -679,7 +757,18 @@ async function startChat() {
                 message
             );
 
+            updateRoomReadCounts();
+
+            if (message.userId !== currentUser.id) {
+                markRoomMessagesRead([message]);
+            }
+
         }
+    );
+
+    socket.on(
+        "chat-room-read-update",
+        updateRoomReadCounts
     );
 
 
