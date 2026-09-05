@@ -1,141 +1,119 @@
-const Database = require("better-sqlite3");
+const { Pool } = require("pg");
 
-const db = new Database("ourcom.db");
+if (!process.env.DATABASE_URL) {
+    throw new Error("DATABASE_URL 환경 변수가 없습니다. Render PostgreSQL 연결 주소를 설정해주세요.");
+}
 
-db.pragma("journal_mode = WAL");
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.NODE_ENV === "production"
+        ? { rejectUnauthorized: false }
+        : false
+});
 
-// ==================================================
-// 사용자
-// ==================================================
+async function query(text, params = []) {
+    return pool.query(text, params);
+}
 
-db.prepare(`
-    CREATE TABLE IF NOT EXISTS users (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        password TEXT NOT NULL,
-        role TEXT NOT NULL DEFAULT 'user'
-    )
-`).run();
+async function transaction(callback) {
+    const client = await pool.connect();
 
+    try {
+        await client.query("BEGIN");
+        const result = await callback(client);
+        await client.query("COMMIT");
+        return result;
+    } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+    } finally {
+        client.release();
+    }
+}
 
-// ==================================================
-// 전체 채팅
-// ==================================================
+async function initializeDatabase() {
+    await query(`
+        CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            password TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'user'
+        );
 
-db.prepare(`
-    CREATE TABLE IF NOT EXISTS group_messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id TEXT NOT NULL,
-        user_name TEXT NOT NULL,
-        text TEXT NOT NULL,
-        time TEXT NOT NULL
-    )
-`).run();
+        CREATE TABLE IF NOT EXISTS group_messages (
+            id BIGSERIAL PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            user_name TEXT NOT NULL,
+            text TEXT NOT NULL,
+            time TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
 
+        CREATE TABLE IF NOT EXISTS private_messages (
+            id BIGSERIAL PRIMARY KEY,
+            from_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            from_name TEXT NOT NULL,
+            to_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            text TEXT NOT NULL,
+            time TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
 
-// ==================================================
-// 1:1 채팅
-// ==================================================
+        CREATE TABLE IF NOT EXISTS group_reads (
+            message_id BIGINT NOT NULL REFERENCES group_messages(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            PRIMARY KEY (message_id, user_id)
+        );
 
-db.prepare(`
-    CREATE TABLE IF NOT EXISTS private_messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        from_id TEXT NOT NULL,
-        from_name TEXT NOT NULL,
-        to_id TEXT NOT NULL,
-        text TEXT NOT NULL,
-        time TEXT NOT NULL
-    )
-`).run();
+        CREATE TABLE IF NOT EXISTS private_reads (
+            message_id BIGINT NOT NULL REFERENCES private_messages(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            PRIMARY KEY (message_id, user_id)
+        );
 
+        CREATE TABLE IF NOT EXISTS group_rooms (
+            id BIGSERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            creator_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            creator_name TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
 
-// ==================================================
-// 전체 채팅 읽음
-// ==================================================
+        CREATE TABLE IF NOT EXISTS group_room_members (
+            room_id BIGINT NOT NULL REFERENCES group_rooms(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            user_name TEXT NOT NULL,
+            PRIMARY KEY (room_id, user_id)
+        );
 
-db.prepare(`
-    CREATE TABLE IF NOT EXISTS group_reads (
-        message_id INTEGER NOT NULL,
-        user_id TEXT NOT NULL,
-        PRIMARY KEY(message_id, user_id)
-    )
-`).run();
+        CREATE TABLE IF NOT EXISTS group_room_messages (
+            id BIGSERIAL PRIMARY KEY,
+            room_id BIGINT NOT NULL REFERENCES group_rooms(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            user_name TEXT NOT NULL,
+            text TEXT NOT NULL,
+            time TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
 
+        CREATE TABLE IF NOT EXISTS group_room_reads (
+            message_id BIGINT NOT NULL REFERENCES group_room_messages(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            PRIMARY KEY (message_id, user_id)
+        );
 
-// ==================================================
-// 1:1 읽음
-// ==================================================
+        CREATE INDEX IF NOT EXISTS private_messages_to_from_idx
+            ON private_messages (to_id, from_id, id);
+        CREATE INDEX IF NOT EXISTS private_reads_user_idx
+            ON private_reads (user_id, message_id);
+        CREATE INDEX IF NOT EXISTS group_room_members_user_idx
+            ON group_room_members (user_id, room_id);
+    `);
+}
 
-db.prepare(`
-    CREATE TABLE IF NOT EXISTS private_reads (
-        message_id INTEGER NOT NULL,
-        user_id TEXT NOT NULL,
-        PRIMARY KEY(message_id, user_id)
-    )
-`).run();
-
-
-// ==================================================
-// 전체 채팅 공감
-// ==================================================
-
-db.prepare(`
-    CREATE TABLE IF NOT EXISTS group_reactions (
-        message_id INTEGER NOT NULL,
-        user_id TEXT NOT NULL,
-        reaction TEXT NOT NULL DEFAULT '❤️',
-
-        PRIMARY KEY(message_id, user_id, reaction)
-    )
-`).run();
-
-
-// ==================================================
-// 단톡방
-// ==================================================
-
-db.prepare(`
-    CREATE TABLE IF NOT EXISTS chat_groups (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        owner_id TEXT NOT NULL,
-        owner_name TEXT NOT NULL,
-        created_at TEXT NOT NULL
-    )
-`).run();
-
-
-// ==================================================
-// 단톡방 멤버
-// ==================================================
-
-db.prepare(`
-    CREATE TABLE IF NOT EXISTS chat_group_members (
-        group_id INTEGER NOT NULL,
-        user_id TEXT NOT NULL,
-        user_name TEXT NOT NULL,
-
-        PRIMARY KEY(group_id, user_id)
-    )
-`).run();
-
-
-// ==================================================
-// 단톡방 메시지
-// ==================================================
-
-db.prepare(`
-    CREATE TABLE IF NOT EXISTS chat_group_messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        group_id INTEGER NOT NULL,
-        user_id TEXT NOT NULL,
-        user_name TEXT NOT NULL,
-        text TEXT NOT NULL,
-        time TEXT NOT NULL
-    )
-`).run();
-
-
-console.log("OURCOM 데이터베이스 준비 완료");
-
-module.exports = db;
+module.exports = {
+    pool,
+    query,
+    transaction,
+    initializeDatabase
+};

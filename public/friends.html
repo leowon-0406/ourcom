@@ -136,9 +136,27 @@
             color: #9ca3af;
         }
 
-        .arrow {
-            margin-left: auto;
+        .friend-info {
+            min-width: 0;
+        }
 
+        .unread-dot {
+            width: 11px;
+            height: 11px;
+            margin-left: auto;
+            margin-right: 14px;
+            border-radius: 50%;
+            background: #ef4444;
+            box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.15);
+            display: none;
+            flex: 0 0 auto;
+        }
+
+        .unread-dot.visible {
+            display: block;
+        }
+
+        .arrow {
             color: #9ca3af;
 
             font-size: 20px;
@@ -201,7 +219,12 @@
 </div>
 
 
+<script src="/socket.io/socket.io.js"></script>
+
 <script>
+
+let socket;
+let unreadCounts = {};
 
 async function loadFriends() {
 
@@ -222,11 +245,19 @@ async function loadFriends() {
         }
 
 
-        const response =
-            await fetch("/api/users");
+        const [usersResponse, unreadResponse] =
+            await Promise.all([
+                fetch("/api/users"),
+                fetch("/api/private-unread-counts")
+            ]);
 
-        const data =
-            await response.json();
+        const data = await usersResponse.json();
+        const unreadData = await unreadResponse.json();
+
+        unreadCounts =
+            unreadData.success
+                ? unreadData.counts
+                : {};
 
 
         const container =
@@ -258,14 +289,16 @@ async function loadFriends() {
 
                 <div
                     class="friend"
-                    onclick="openChat('${user.id}')"
+                    data-friend-id="${escapeHtml(user.id)}"
+                    role="button"
+                    tabindex="0"
                 >
 
                     <div class="avatar">
                         👤
                     </div>
 
-                    <div>
+                    <div class="friend-info">
 
                         <div class="friend-name">
                             ${escapeHtml(user.name)}
@@ -277,6 +310,12 @@ async function loadFriends() {
 
                     </div>
 
+                    <span
+                        class="unread-dot ${Number(unreadCounts[user.id] || 0) > 0 ? "visible" : ""}"
+                        data-unread-user="${escapeHtml(user.id)}"
+                        aria-label="읽지 않은 메시지 있음"
+                    ></span>
+
                     <div class="arrow">
                         ›
                     </div>
@@ -284,6 +323,35 @@ async function loadFriends() {
                 </div>
 
             `).join("");
+
+        container
+            .querySelectorAll("[data-friend-id]")
+            .forEach(friendElement => {
+
+                const open =
+                    () => openChat(
+                        friendElement.dataset.friendId
+                    );
+
+                friendElement.addEventListener(
+                    "click",
+                    open
+                );
+
+                friendElement.addEventListener(
+                    "keydown",
+                    event => {
+                        if (
+                            event.key === "Enter" ||
+                            event.key === " "
+                        ) {
+                            event.preventDefault();
+                            open();
+                        }
+                    }
+                );
+
+            });
 
     }
 
@@ -297,6 +365,73 @@ async function loadFriends() {
             "친구 목록을 불러오지 못했습니다.";
 
     }
+
+}
+
+
+async function updateUnreadDots() {
+
+    try {
+
+        const response =
+            await fetch("/api/private-unread-counts");
+
+        if (response.status === 401) {
+            location.href = "/";
+            return;
+        }
+
+        const data = await response.json();
+
+        if (!data.success) {
+            return;
+        }
+
+        unreadCounts = data.counts || {};
+
+        document
+            .querySelectorAll("[data-unread-user]")
+            .forEach(dot => {
+
+                const userId =
+                    dot.dataset.unreadUser;
+
+                dot.classList.toggle(
+                    "visible",
+                    Number(unreadCounts[userId] || 0) > 0
+                );
+
+            });
+
+    }
+    catch (error) {
+        console.error(
+            "안 읽은 메시지 확인 오류:",
+            error
+        );
+    }
+
+}
+
+
+function connectNotifications() {
+
+    socket = io();
+
+    socket.on(
+        "private message",
+        updateUnreadDots
+    );
+
+    socket.on(
+        "private-read-update",
+        updateUnreadDots
+    );
+
+    socket.on(
+        "connect",
+        updateUnreadDots
+    );
 
 }
 
@@ -321,7 +456,7 @@ function escapeHtml(text) {
 }
 
 
-loadFriends();
+loadFriends().then(connectNotifications);
 
 </script>
 
