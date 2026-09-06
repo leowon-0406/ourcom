@@ -4,6 +4,7 @@ const path = require("path");
 const session = require("express-session");
 const pgSession = require("connect-pg-simple")(session);
 const bcrypt = require("bcrypt");
+const crypto = require("crypto");
 const { Server } = require("socket.io");
 const { pool, query, transaction, initializeDatabase } = require("./database");
 
@@ -79,6 +80,67 @@ function safeText(value, maxLength = 2000) {
     return typeof value === "string"
         ? value.trim().slice(0, maxLength)
         : "";
+}
+
+const CLOUDINARY_TYPES = new Set(["image", "video", "raw"]);
+const ATTACHMENT_LIMITS = { image: 10 * 1024 * 1024, video: 40 * 1024 * 1024, raw: 10 * 1024 * 1024 };
+
+function cloudinaryReady() {
+    return Boolean(process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET);
+}
+
+function uploadFolder(userId) {
+    const owner = crypto.createHash("sha256").update(String(userId)).digest("hex").slice(0, 16);
+    return `ourcom/${owner}`;
+}
+
+function cloudinarySignature(params) {
+    const payload = Object.keys(params).sort().map(key => `${key}=${params[key]}`).join("&");
+    return crypto.createHash("sha1").update(payload + process.env.CLOUDINARY_API_SECRET).digest("hex");
+}
+
+function safeAttachment(value, userId) {
+    if (!value || typeof value !== "object") return null;
+    const resourceType = safeText(value.resourceType, 10);
+    const publicId = safeText(value.publicId, 300);
+    const secureUrl = safeText(value.secureUrl, 1000);
+    const fileName = safeText(value.fileName, 200);
+    const mimeType = safeText(value.mimeType, 100).toLowerCase();
+    const bytes = Number(value.bytes);
+    if (!CLOUDINARY_TYPES.has(resourceType) || !publicId.startsWith(`${uploadFolder(userId)}/`)) return null;
+    if (!Number.isInteger(bytes) || bytes < 1 || bytes > ATTACHMENT_LIMITS[resourceType]) return null;
+    if ((resourceType === "image" && !/^image\/(jpeg|png|webp|gif)$/.test(mimeType)) ||
+        (resourceType === "video" && !/^video\/(mp4|webm)$/.test(mimeType)) ||
+        (resourceType === "raw" && mimeType !== "application/pdf")) return null;
+    try {
+        const url = new URL(secureUrl);
+        if (url.protocol !== "https:" || url.hostname !== "res.cloudinary.com" ||
+            !url.pathname.startsWith(`/${process.env.CLOUDINARY_CLOUD_NAME}/`)) return null;
+    } catch {
+        return null;
+    }
+    return { resourceType, publicId, secureUrl, fileName: fileName || "파일", mimeType, bytes };
+}
+
+async function destroyAttachment(attachment) {
+    if (!cloudinaryReady() || !attachment || !CLOUDINARY_TYPES.has(attachment.resourceType)) return;
+    const timestamp = Math.floor(Date.now() / 1000);
+    const params = { public_id: attachment.publicId, timestamp };
+    const body = new URLSearchParams({
+        ...params,
+        api_key: process.env.CLOUDINARY_API_KEY,
+        signature: cloudinarySignature(params)
+    });
+    try {
+        const response = await fetch(`https://api.cloudinary.com/v1_1/${encodeURIComponent(process.env.CLOUDINARY_CLOUD_NAME)}/${attachment.resourceType}/destroy`, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body
+        });
+        if (!response.ok) console.error("Cloudinary 파일 삭제 실패:", response.status);
+    } catch (error) {
+        console.error("Cloudinary 파일 삭제 오류:", error.message);
+    }
 }
 
 const loginAttempts = new Map();
@@ -191,6 +253,28 @@ app.get("/api/me", (req, res) => {
     res.json({ loggedIn: true, user: req.session.user });
 });
 
+app.post("/api/cloudinary-signature", requireLogin, (req, res) => {
+    if (!cloudinaryReady()) {
+        return res.status(503).json({ success: false, message: "파일 저장소 설정이 완료되지 않았습니다." });
+    }
+    const resourceType = safeText(req.body.resourceType, 10);
+    if (!CLOUDINARY_TYPES.has(resourceType)) {
+        return res.status(400).json({ success: false, message: "지원하지 않는 파일 형식입니다." });
+    }
+    const timestamp = Math.floor(Date.now() / 1000);
+    const folder = uploadFolder(req.session.user.id);
+    const params = { folder, timestamp };
+    res.json({
+        success: true,
+        cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+        apiKey: process.env.CLOUDINARY_API_KEY,
+        resourceType,
+        timestamp,
+        folder,
+        signature: cloudinarySignature(params)
+    });
+});
+
 app.get("/api/users", requireLogin, asyncHandler(async (req, res) => {
     const users = (await getUsers()).filter(
         user => user.id !== req.session.user.id
@@ -259,10 +343,12 @@ app.get("/api/group-messages", requireLogin, asyncHandler(async (req, res) => {
     const before = beforeId(req.query.before);
     const result = await query(`
         SELECT m.id::int, m.user_id AS "userId", m.user_name AS name,
-               m.text, m.time, (m.edited_at IS NOT NULL) AS edited,
+               m.text, m.time, CASE WHEN m.deleted_at IS NULL THEN m.attachment END AS attachment,
+               (m.edited_at IS NOT NULL) AS edited,
                (m.deleted_at IS NOT NULL) AS deleted,
                m.reply_to_id::int AS "replyToId",
-               reply.user_name AS "replyToName", reply.text AS "replyToText"
+               reply.user_name AS "replyToName",
+               COALESCE(NULLIF(reply.text, ''), CASE WHEN reply.attachment IS NOT NULL THEN '📎 파일' END) AS "replyToText"
         FROM group_messages m
         LEFT JOIN group_messages reply ON reply.id = m.reply_to_id
         WHERE ($1::bigint IS NULL OR m.id < $1)
@@ -352,10 +438,12 @@ app.get("/api/private-messages/:userId", requireLogin,
         const result = await query(`
             SELECT m.id::int, m.from_id AS "fromId", m.from_name AS "fromName",
                    m.to_id AS "toId", m.text, m.time,
+                   CASE WHEN m.deleted_at IS NULL THEN m.attachment END AS attachment,
                    (m.edited_at IS NOT NULL) AS edited,
                    (m.deleted_at IS NOT NULL) AS deleted,
                    m.reply_to_id::int AS "replyToId",
-                   reply.from_name AS "replyToName", reply.text AS "replyToText"
+                   reply.from_name AS "replyToName",
+                   COALESCE(NULLIF(reply.text, ''), CASE WHEN reply.attachment IS NOT NULL THEN '📎 파일' END) AS "replyToText"
             FROM private_messages m
             LEFT JOIN private_messages reply ON reply.id = m.reply_to_id
             WHERE ((m.from_id = $1 AND m.to_id = $2)
@@ -393,7 +481,8 @@ app.post("/api/private-messages/:userId", requireLogin,
 
         if (Number.isInteger(requestedReplyId)) {
             const replyResult = await query(`
-                SELECT id::int, from_name AS "replyToName", text AS "replyToText"
+                SELECT id::int, from_name AS "replyToName",
+                       COALESCE(NULLIF(text, ''), CASE WHEN attachment IS NOT NULL THEN '📎 파일' END) AS "replyToText"
                 FROM private_messages
                 WHERE id = $1
                   AND ((from_id = $2 AND to_id = $3)
@@ -624,9 +713,11 @@ app.get("/api/chat-rooms/:roomId/messages", requireLogin,
         }
         const result = await query(`
             SELECT m.id::int, m.user_id AS "userId", m.user_name AS "userName",
-                   m.text, m.time, (m.edited_at IS NOT NULL) AS edited,
+                   m.text, m.time, CASE WHEN m.deleted_at IS NULL THEN m.attachment END AS attachment,
+                   (m.edited_at IS NOT NULL) AS edited,
                    (m.deleted_at IS NOT NULL) AS deleted,
-                   reply.user_name AS "replyToName", reply.text AS "replyToText"
+                   m.reply_to_id::int AS "replyToId", reply.user_name AS "replyToName",
+                   COALESCE(NULLIF(reply.text, ''), CASE WHEN reply.attachment IS NOT NULL THEN '📎 파일' END) AS "replyToText"
             FROM group_room_messages m
             LEFT JOIN group_room_messages reply ON reply.id = m.reply_to_id
             WHERE m.room_id = $1
@@ -820,9 +911,11 @@ io.on("connection", socket => {
         socket.join("group");
         const result = await query(`
             SELECT m.id::int, m.user_id AS "userId", m.user_name AS name,
-                   m.text, m.time, (m.edited_at IS NOT NULL) AS edited,
+                   m.text, m.time, CASE WHEN m.deleted_at IS NULL THEN m.attachment END AS attachment,
+                   (m.edited_at IS NOT NULL) AS edited,
                    (m.deleted_at IS NOT NULL) AS deleted,
-                   reply.user_name AS "replyToName", reply.text AS "replyToText"
+                   reply.user_name AS "replyToName",
+                   COALESCE(NULLIF(reply.text, ''), CASE WHEN reply.attachment IS NOT NULL THEN '📎 파일' END) AS "replyToText"
             FROM group_messages m
             LEFT JOIN group_messages reply ON reply.id = m.reply_to_id
             ORDER BY m.id DESC
@@ -834,13 +927,15 @@ io.on("connection", socket => {
     socket.on("group message", guard(async value => {
         const data = typeof value === "string" ? { text: value } : value;
         const text = safeText(data && data.text);
+        const attachment = safeAttachment(data && data.attachment, userId);
         const clientId = safeText(data && data.clientId, 80) || null;
-        if (!text) return;
+        if (!text && !attachment) return;
         const requestedReplyId = Number(data && data.replyToId);
         let reply = null;
         if (Number.isInteger(requestedReplyId)) {
             const replyResult = await query(`
-                SELECT id::int, user_name AS "replyToName", text AS "replyToText"
+                SELECT id::int, user_name AS "replyToName",
+                       COALESCE(NULLIF(text, ''), CASE WHEN attachment IS NOT NULL THEN '📎 파일' END) AS "replyToText"
                 FROM group_messages WHERE id = $1
             `, [requestedReplyId]);
             reply = replyResult.rows[0] || null;
@@ -848,17 +943,18 @@ io.on("connection", socket => {
         const time = chatTime();
         const result = await query(`
             INSERT INTO group_messages
-                (user_id, user_name, text, time, reply_to_id, client_id)
-            VALUES ($1, $2, $3, $4, $5, $6)
+                (user_id, user_name, text, time, reply_to_id, client_id, attachment)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             ON CONFLICT (user_id, client_id) WHERE client_id IS NOT NULL
             DO UPDATE SET client_id = EXCLUDED.client_id
             RETURNING id::int, time
-        `, [userId, socket.user.name, text, time, reply && reply.id, clientId]);
+        `, [userId, socket.user.name, text, time, reply && reply.id, clientId, attachment]);
         io.to("group").emit("group message", {
             id: result.rows[0].id,
             userId,
             name: socket.user.name,
             text,
+            attachment,
             time: result.rows[0].time,
             replyToId: reply && reply.id,
             replyToName: reply && reply.replyToName,
@@ -891,10 +987,12 @@ io.on("connection", socket => {
         const result = await query(`
             SELECT m.id::int, m.from_id AS "fromId", m.from_name AS "fromName",
                    m.to_id AS "toId", m.text, m.time,
+                   CASE WHEN m.deleted_at IS NULL THEN m.attachment END AS attachment,
                    (m.edited_at IS NOT NULL) AS edited,
                    (m.deleted_at IS NOT NULL) AS deleted,
                    m.reply_to_id::int AS "replyToId",
-                   reply.from_name AS "replyToName", reply.text AS "replyToText"
+                   reply.from_name AS "replyToName",
+                   COALESCE(NULLIF(reply.text, ''), CASE WHEN reply.attachment IS NOT NULL THEN '📎 파일' END) AS "replyToText"
             FROM private_messages m
             LEFT JOIN private_messages reply ON reply.id = m.reply_to_id
             WHERE (m.from_id = $1 AND m.to_id = $2)
@@ -913,15 +1011,17 @@ io.on("connection", socket => {
         if (!data || typeof data.toId !== "string") return;
         const toId = data.toId;
         const text = safeText(data.text);
+        const attachment = safeAttachment(data.attachment, userId);
         const clientId = safeText(data.clientId, 80) || null;
-        if (!text || toId === userId) return;
+        if ((!text && !attachment) || toId === userId) return;
         const target = await query("SELECT 1 FROM users WHERE id = $1", [toId]);
         if (!target.rowCount) return;
         const requestedReplyId = Number(data.replyToId);
         let reply = null;
         if (Number.isInteger(requestedReplyId)) {
             const replyResult = await query(`
-                SELECT id::int, from_name AS "replyToName", text AS "replyToText"
+                SELECT id::int, from_name AS "replyToName",
+                       COALESCE(NULLIF(text, ''), CASE WHEN attachment IS NOT NULL THEN '📎 파일' END) AS "replyToText"
                 FROM private_messages
                 WHERE id = $1
                   AND ((from_id = $2 AND to_id = $3)
@@ -932,18 +1032,19 @@ io.on("connection", socket => {
         const time = chatTime();
         const result = await query(`
             INSERT INTO private_messages
-                (from_id, from_name, to_id, text, time, reply_to_id, client_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+                (from_id, from_name, to_id, text, time, reply_to_id, client_id, attachment)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             ON CONFLICT (from_id, client_id) WHERE client_id IS NOT NULL
             DO UPDATE SET client_id = EXCLUDED.client_id
             RETURNING id::int, time
-        `, [userId, socket.user.name, toId, text, time, reply && reply.id, clientId]);
+        `, [userId, socket.user.name, toId, text, time, reply && reply.id, clientId, attachment]);
         const message = {
             id: result.rows[0].id,
             fromId: userId,
             fromName: socket.user.name,
             toId,
             text,
+            attachment,
             time: result.rows[0].time,
             replyToId: reply && reply.id,
             replyToName: reply && reply.replyToName,
@@ -967,9 +1068,11 @@ io.on("connection", socket => {
         socket.join(`chatroom:${roomId}`);
         const result = await query(`
             SELECT m.id::int, m.user_id AS "userId", m.user_name AS "userName",
-                   m.text, m.time, (m.edited_at IS NOT NULL) AS edited,
+                   m.text, m.time, CASE WHEN m.deleted_at IS NULL THEN m.attachment END AS attachment,
+                   (m.edited_at IS NOT NULL) AS edited,
                    (m.deleted_at IS NOT NULL) AS deleted,
-                   reply.user_name AS "replyToName", reply.text AS "replyToText"
+                   m.reply_to_id::int AS "replyToId", reply.user_name AS "replyToName",
+                   COALESCE(NULLIF(reply.text, ''), CASE WHEN reply.attachment IS NOT NULL THEN '📎 파일' END) AS "replyToText"
             FROM group_room_messages m
             LEFT JOIN group_room_messages reply ON reply.id = m.reply_to_id
             WHERE m.room_id = $1
@@ -982,9 +1085,10 @@ io.on("connection", socket => {
     socket.on("chat room message", guard(async data => {
         const roomId = Number(data && data.roomId);
         const text = safeText(data && data.text);
+        const attachment = safeAttachment(data && data.attachment, userId);
         const clientId = safeText(data && data.clientId, 80) || null;
         const requestedReplyId = Number(data && data.replyToId);
-        if (!Number.isInteger(roomId) || !text) return;
+        if (!Number.isInteger(roomId) || (!text && !attachment)) return;
         const member = await query(
             "SELECT 1 FROM group_room_members WHERE room_id = $1 AND user_id = $2",
             [roomId, userId]
@@ -993,7 +1097,8 @@ io.on("connection", socket => {
         let reply = null;
         if (Number.isInteger(requestedReplyId) && requestedReplyId > 0) {
             const replyResult = await query(`
-                SELECT id::int, user_name AS "replyToName", text AS "replyToText"
+                SELECT id::int, user_name AS "replyToName",
+                       COALESCE(NULLIF(text, ''), CASE WHEN attachment IS NOT NULL THEN '📎 파일' END) AS "replyToText"
                 FROM group_room_messages
                 WHERE id = $1 AND room_id = $2
             `, [requestedReplyId, roomId]);
@@ -1003,18 +1108,19 @@ io.on("connection", socket => {
         const time = chatTime();
         const result = await query(`
             INSERT INTO group_room_messages
-                (room_id, user_id, user_name, text, time, reply_to_id, client_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+                (room_id, user_id, user_name, text, time, reply_to_id, client_id, attachment)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             ON CONFLICT (room_id, user_id, client_id) WHERE client_id IS NOT NULL
             DO UPDATE SET client_id = EXCLUDED.client_id
             RETURNING id::int, time
-        `, [roomId, userId, socket.user.name, text, time, reply && reply.id, clientId]);
+        `, [roomId, userId, socket.user.name, text, time, reply && reply.id, clientId, attachment]);
         io.to(`chatroom:${roomId}`).emit("chat room message", {
             id: result.rows[0].id,
             roomId,
             userId,
             userName: socket.user.name,
             text,
+            attachment,
             time: result.rows[0].time,
             replyToId: reply && reply.id,
             replyToName: reply && reply.replyToName,
@@ -1046,9 +1152,10 @@ io.on("connection", socket => {
             UPDATE group_messages
             SET text = '삭제된 메시지', deleted_at = NOW(), edited_at = NULL
             WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
-            RETURNING id::int
+            RETURNING id::int, attachment
         `, [messageId, userId]);
         if (!result.rowCount) return;
+        void destroyAttachment(result.rows[0].attachment);
         io.to("group").emit("group message updated", {
             id: result.rows[0].id,
             text: "삭제된 메시지",
@@ -1082,10 +1189,11 @@ io.on("connection", socket => {
             UPDATE private_messages
             SET text = '삭제된 메시지', deleted_at = NOW(), edited_at = NULL
             WHERE id = $1 AND from_id = $2 AND deleted_at IS NULL
-            RETURNING id::int, from_id, to_id
+            RETURNING id::int, from_id, to_id, attachment
         `, [messageId, userId]);
         if (!result.rowCount) return;
         const row = result.rows[0];
+        void destroyAttachment(row.attachment);
         io.to(`private:${row.from_id}`).to(`private:${row.to_id}`)
             .emit("private message updated", {
                 id: row.id,
@@ -1120,9 +1228,10 @@ io.on("connection", socket => {
             UPDATE group_room_messages
             SET text = '삭제된 메시지', deleted_at = NOW(), edited_at = NULL
             WHERE id = $1 AND room_id = $2 AND user_id = $3 AND deleted_at IS NULL
-            RETURNING id::int
+            RETURNING id::int, attachment
         `, [messageId, roomId, userId]);
         if (!result.rowCount) return;
+        void destroyAttachment(result.rows[0].attachment);
         io.to(`chatroom:${roomId}`).emit("chat room message updated", {
             id: result.rows[0].id,
             roomId,

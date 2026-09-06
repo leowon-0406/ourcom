@@ -346,6 +346,7 @@
 
 
 <script src="/socket.io/socket.io.js"></script>
+<script src="/chat-attachments.js"></script>
 
 
 <script>
@@ -362,6 +363,7 @@ let readCountTimer = null;
 let hasMoreMessages = true;
 let loadingOlder = false;
 const pendingMessages = new Map();
+OurcomFiles.init();
 
 function scheduleReadCountUpdate() {
     clearTimeout(readCountTimer);
@@ -413,7 +415,7 @@ function startReply(message) {
     replyingTo = {
         id: message.id,
         name: message.fromName,
-        text: message.text
+        text: OurcomFiles.preview(message)
     };
     document.getElementById("replyPreviewName").textContent = `${replyingTo.name}님에게 답장`;
     document.getElementById("replyPreviewText").textContent = replyingTo.text;
@@ -636,6 +638,7 @@ function addMessage(message) {
     messageText.className = "message-text";
     messageText.textContent = message.text;
     bubble.appendChild(messageText);
+    OurcomFiles.appendToBubble(bubble, message.attachment, message.deleted);
 
     if (message.edited && !message.deleted) {
         const edited = document.createElement("span");
@@ -672,13 +675,15 @@ function addMessage(message) {
     unreadCount.onclick = () => showUnreadUsers(message.id);
     div.appendChild(unreadCount);
 
+    const messageActions = document.createElement("span");
+    messageActions.className = "message-actions";
     const replyButton = document.createElement("button");
     replyButton.type = "button";
     replyButton.className = "reply-button";
     replyButton.textContent = "↩ 답장";
     replyButton.onclick = () => startReply(message);
     replyButton.disabled = Boolean(message.pending || message.deleted);
-    div.appendChild(replyButton);
+    messageActions.appendChild(replyButton);
 
     if (message.fromId === currentUser.id && !message.pending && !message.deleted) {
         const actions = document.createElement("span");
@@ -692,8 +697,11 @@ function addMessage(message) {
         remove.textContent = "삭제";
         remove.onclick = () => deleteMessage(message);
         actions.append(edit, remove);
-        div.appendChild(actions);
+        messageActions.appendChild(actions);
     }
+
+    div.appendChild(messageActions);
+    OurcomFiles.enableLongPress(div);
 
 
     container.appendChild(
@@ -733,9 +741,8 @@ function applyMessageUpdate(update) {
         }
         if (update.deleted) {
             element.classList.add("deleted");
-            element.querySelector(".owner-actions")?.remove();
-            const reply = element.querySelector(".reply-button");
-            if (reply) reply.disabled = true;
+            element.querySelector(".attachment")?.remove();
+            element.querySelector(".message-actions")?.remove();
         }
     }
     document.querySelectorAll(`[data-reply-to-id="${Number(update.id)}"] span`)
@@ -1115,7 +1122,9 @@ async function startChat() {
        메시지 보내기
     ===================================== */
 
-    function sendMessage() {
+    async function sendMessage() {
+
+        if (document.getElementById("sendButton").disabled) return;
 
         const input =
             document.getElementById(
@@ -1127,7 +1136,7 @@ async function startChat() {
             input.value.trim();
 
 
-        if (!text) {
+        if (!text && !OurcomFiles.hasFile()) {
             return;
         }
 
@@ -1145,6 +1154,17 @@ async function startChat() {
 
         }
 
+        OurcomFiles.setSending(true);
+        let attachment;
+        try {
+            attachment = await OurcomFiles.uploadSelected();
+        } catch (error) {
+            alert(error.message || "파일을 전송하지 못했습니다.");
+            OurcomFiles.setSending(false);
+            return;
+        }
+        OurcomFiles.setSending(false);
+
         const clientId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
         const reply = replyingTo;
 
@@ -1156,6 +1176,7 @@ async function startChat() {
             fromName: currentUser.name,
             toId: friendId,
             text,
+            attachment,
             time: "전송 중",
             replyToId: reply ? reply.id : null,
             replyToName: reply ? reply.name : null,
@@ -1166,6 +1187,7 @@ async function startChat() {
         const payload = {
             toId: friendId,
             text,
+            attachment,
             replyToId: reply ? reply.id : null,
             clientId
         };
