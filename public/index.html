@@ -95,6 +95,11 @@
             background: #374151;
         }
 
+        .secondary-button { background: #eef2ff; color: #3730a3; }
+        .secondary-button:hover { background: #e0e7ff; }
+        .hidden { display: none; }
+        .form-title { margin: 0 0 18px; text-align: center; font-size: 20px; }
+
         .message {
             min-height: 22px;
             margin-top: 16px;
@@ -124,6 +129,7 @@
             우리들만의 소통망
         </div>
 
+        <div id="loginForm">
         <div class="input-group">
             <label for="username">아이디</label>
 
@@ -151,6 +157,18 @@
             로그인
         </button>
 
+        <button class="secondary-button" onclick="showRegister()">내 계정 만들기</button>
+        </div>
+
+        <div id="registerForm" class="hidden">
+            <h2 class="form-title">가입 승인 요청</h2>
+            <div class="input-group"><label for="registerName">이름</label><input id="registerName" maxlength="40" placeholder="이름 입력"></div>
+            <div class="input-group"><label for="registerId">아이디</label><input id="registerId" maxlength="30" placeholder="영문·숫자 3자 이상"></div>
+            <div class="input-group"><label for="registerPassword">비밀번호</label><input id="registerPassword" type="password" maxlength="100" placeholder="6자 이상"></div>
+            <button onclick="registerAccount()">승인 요청</button>
+            <button class="secondary-button" onclick="showLogin()">로그인으로 돌아가기</button>
+        </div>
+
         <div id="message" class="message"></div>
 
         <div class="footer">
@@ -161,6 +179,46 @@
 </div>
 
 <script>
+
+function showRegister() {
+    document.getElementById("loginForm").classList.add("hidden");
+    document.getElementById("registerForm").classList.remove("hidden");
+    document.getElementById("message").textContent = "";
+}
+
+function showLogin() {
+    document.getElementById("registerForm").classList.add("hidden");
+    document.getElementById("loginForm").classList.remove("hidden");
+    document.getElementById("message").textContent = "";
+}
+
+async function registerAccount() {
+    const message = document.getElementById("message");
+    const body = {
+        name: document.getElementById("registerName").value.trim(),
+        id: document.getElementById("registerId").value.trim(),
+        password: document.getElementById("registerPassword").value
+    };
+    if (!body.name || !body.id || !body.password) {
+        message.style.color = "#ef4444";
+        message.textContent = "모든 내용을 입력해주세요.";
+        return;
+    }
+    message.style.color = "#777";
+    message.textContent = "승인 요청을 보내는 중...";
+    try {
+        const response = await fetch("/api/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        const data = await response.json();
+        message.style.color = data.success ? "#16a34a" : "#ef4444";
+        message.textContent = data.message;
+        if (data.success) {
+            ["registerName", "registerId", "registerPassword"].forEach(id => document.getElementById(id).value = "");
+        }
+    } catch (error) {
+        message.style.color = "#ef4444";
+        message.textContent = "서버와 연결할 수 없습니다.";
+    }
+}
 
 async function login() {
 

@@ -263,6 +263,7 @@ input[type="text"] {
     padding: 20px;
 }
 
+@media(max-width:650px){.header{height:54px;padding:0 10px;font-size:15px}.back{padding:7px 9px;font-size:11px}.container{margin:9px auto;padding:0 8px}.box{padding:13px;border-radius:12px}h2{font-size:16px}.friend,.room{padding:9px}.avatar,.room-icon{font-size:15px}.name,.room-name{font-size:12px}.id,.room-members,.info{font-size:10px}.create{margin-top:14px;padding:11px;font-size:12px}#rooms{margin-top:18px;padding-top:12px}}
 </style>
 
 </head>
@@ -273,7 +274,7 @@ input[type="text"] {
 
 <div class="header">
 
-    👥 단체 채팅
+    단체 채팅
 
     <button
         class="back"
@@ -413,9 +414,7 @@ async function loadFriends() {
                     value="${escapeHtml(user.id)}"
                 >
 
-                <div class="avatar">
-                    👤
-                </div>
+                <div class="avatar">${escapeHtml(user.name.slice(0, 1))}</div>
 
                 <div>
 
@@ -584,9 +583,7 @@ async function loadRooms() {
                     onclick="openRoom(${room.id})"
                 >
 
-                    <div class="room-icon">
-                        👥
-                    </div>
+                    <div class="room-icon">단</div>
 
                     <div>
 

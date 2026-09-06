@@ -93,10 +93,10 @@
         area.parentNode.insertBefore(status, area);
     }
 
-    async function uploadSelected() {
-        if (!selectedFile) return null;
-        const file = selectedFile;
+    async function uploadFile(file, onProgress) {
         const type = resourceType(file);
+        if (!type) throw new Error("지원하지 않는 파일 형식입니다.");
+        if (file.size > limits[type]) throw new Error(type === "video" ? "동영상은 40MB 이하만 가능합니다." : "파일은 10MB 이하만 가능합니다.");
         const signatureResponse = await fetch("/api/cloudinary-signature", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -118,7 +118,8 @@
             xhr.upload.onprogress = event => {
                 if (!event.lengthComputable) return;
                 const percent = Math.round(event.loaded / event.total * 100);
-                status.querySelector(".file-status-text").textContent = `업로드 중… ${percent}% · ${file.name}`;
+                if (onProgress) onProgress(percent);
+                else if (status) status.querySelector(".file-status-text").textContent = `업로드 중… ${percent}% · ${file.name}`;
             };
             xhr.onload = () => {
                 let data;
@@ -130,7 +131,6 @@
             xhr.send(form);
         });
 
-        clear();
         return {
             resourceType: type,
             publicId: uploaded.public_id,
@@ -139,6 +139,13 @@
             mimeType: file.type,
             bytes: uploaded.bytes
         };
+    }
+
+    async function uploadSelected() {
+        if (!selectedFile) return null;
+        const result = await uploadFile(selectedFile);
+        clear();
+        return result;
     }
 
     function appendToBubble(bubble, attachment, deleted) {
@@ -221,6 +228,7 @@
     window.OurcomFiles = {
         init,
         hasFile: () => Boolean(selectedFile),
+        uploadFile,
         uploadSelected,
         clear,
         appendToBubble,

@@ -20,8 +20,18 @@
         .ourcom-refresh-button:hover { background: #6b7280; }
         .ourcom-refresh-button:disabled { opacity: .6; cursor: wait; }
         .ourcom-refresh-button.floating { position: fixed; top: 14px; right: 14px; z-index: 1000; }
+        .install-guide-overlay { position:fixed; inset:0; z-index:1800; display:flex; align-items:center; justify-content:center; padding:18px; background:rgba(15,23,42,.58); }
+        .install-guide { width:min(390px,100%); padding:22px; border-radius:18px; background:#fff; color:#111827; box-shadow:0 20px 50px rgba(0,0,0,.22); }
+        .install-guide h3 { margin:0 0 9px; font-size:19px; }
+        .install-guide p { margin:0 0 13px; color:#64748b; font-size:13px; line-height:1.55; }
+        .install-guide ol { margin:0 0 17px; padding-left:20px; font-size:13px; line-height:1.7; }
+        .install-guide-actions { display:grid; grid-template-columns:1fr 1fr; gap:7px; }
+        .install-guide-actions button { min-height:40px; border:0; border-radius:9px; background:#111827; color:#fff; font-weight:bold; cursor:pointer; }
+        .install-guide-actions .later { background:#e5e7eb; color:#374151; }
         @media (max-width: 650px) {
             .ourcom-refresh-button { min-height: 34px; margin-left: 5px; padding: 7px 8px; font-size: 11px; }
+            body { font-size:13px; }
+            input,button,select { font-size:13px; }
         }
     `;
     document.head.appendChild(refreshStyle);
@@ -175,10 +185,27 @@
         button.onclick = () => refreshApp(button);
         const header = document.querySelector(".header");
         if (header) header.appendChild(button);
-        else {
-            button.classList.add("floating");
-            document.body.appendChild(button);
-        }
+    }
+
+    function showInstallGuide() {
+        const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+        if (standalone || location.pathname !== "/main.html") return;
+        const lastClosed = Number(localStorage.getItem("ourcom-install-guide-closed") || 0);
+        if (Date.now() - lastClosed < 7 * 24 * 60 * 60 * 1000) return;
+        const apple = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+        const android = /Android/i.test(navigator.userAgent);
+        const overlay = document.createElement("div");
+        overlay.className = "install-guide-overlay";
+        const steps = apple
+            ? "<li>Safari 아래쪽의 공유 버튼을 누릅니다.</li><li>‘홈 화면에 추가’를 선택합니다.</li><li>오른쪽 위 ‘추가’를 누릅니다.</li>"
+            : android
+                ? "<li>Chrome 오른쪽 위 메뉴를 누릅니다.</li><li>‘앱 설치’ 또는 ‘홈 화면에 추가’를 선택합니다.</li><li>설치를 눌러 완료합니다.</li>"
+                : "<li>주소창의 설치 아이콘을 누릅니다.</li><li>아이콘이 없으면 브라우저 메뉴에서 ‘앱 설치’를 선택합니다.</li>";
+        overlay.innerHTML = `<div class="install-guide" role="dialog" aria-modal="true"><h3>OURCOM을 앱으로 사용하기</h3><p>설치하면 홈 화면에서 바로 열 수 있고 앱 화면으로 더 편하게 사용할 수 있습니다.</p><ol>${steps}</ol><div class="install-guide-actions"><button class="install-now">설치하기</button><button class="later">나중에</button></div></div>`;
+        const close = () => { localStorage.setItem("ourcom-install-guide-closed", String(Date.now())); overlay.remove(); };
+        overlay.querySelector(".later").onclick = close;
+        overlay.querySelector(".install-now").onclick = async () => { if (installPrompt) { await installApp(); close(); } else alert(apple ? "Safari 공유 메뉴에서 ‘홈 화면에 추가’를 눌러주세요." : android ? "Chrome 메뉴에서 ‘앱 설치’를 눌러주세요." : "브라우저 메뉴에서 ‘앱 설치’를 선택해주세요."); };
+        document.body.appendChild(overlay);
     }
 
     window.addEventListener("beforeinstallprompt", event => {
@@ -194,6 +221,7 @@
         addRefreshButton();
         updateButtons();
         syncExistingPush();
+        setTimeout(showInstallGuide, 700);
     });
     register();
 

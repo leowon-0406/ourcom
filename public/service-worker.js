@@ -1,9 +1,10 @@
-const CACHE_NAME = "ourcom-pwa-v2";
+const CACHE_NAME = "ourcom-pwa-v3";
 const APP_FILES = [
     "/offline.html",
     "/manifest.webmanifest",
     "/pwa.js",
     "/chat-tools.js",
+    "/chat-typing.js",
     "/chat-attachments.js",
     "/icons/ourcom-192.png",
     "/icons/ourcom-512.png"

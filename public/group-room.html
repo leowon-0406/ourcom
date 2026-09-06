@@ -401,6 +401,7 @@ body {
 <script src="/socket.io/socket.io.js"></script>
 <script src="/chat-attachments.js"></script>
 <script src="/chat-tools.js"></script>
+<script src="/chat-typing.js"></script>
 
 
 <script>
@@ -414,6 +415,7 @@ let roomId = null;
 let roomMembers = [];
 
 let currentRoom = null;
+let displayNames = {};
 
 let replyingTo = null;
 
@@ -470,7 +472,7 @@ function visibleMessageIds() {
 }
 
 function startReply(message) {
-    replyingTo = { id: message.id, name: message.userName, text: OurcomFiles.preview(message) };
+    replyingTo = { id: message.id, name: displayNames[message.userId] || message.userName, text: OurcomFiles.preview(message) };
     document.getElementById("replyPreviewName").textContent = `${replyingTo.name}님에게 답장`;
     document.getElementById("replyPreviewText").textContent = replyingTo.text;
     document.getElementById("replyPreview").style.display = "flex";
@@ -609,6 +611,8 @@ async function loadRoom() {
     roomMembers =
         data.members;
 
+    displayNames = Object.fromEntries(roomMembers.map(member => [member.id, member.displayName || member.name]));
+
 
     document.getElementById(
         "memberCount"
@@ -689,7 +693,7 @@ function addMessage(message) {
         "sender";
 
     sender.textContent =
-        message.userName;
+        displayNames[message.userId] || message.userName;
 
 
     const bubble =
@@ -948,6 +952,16 @@ async function startChat() {
 
     socket =
         io();
+    socket.on("account id changed", () => { alert("관리자가 아이디를 변경했습니다. 새 아이디로 다시 접속합니다."); location.reload(); });
+
+    OurcomTyping.init({
+        socket,
+        input: document.getElementById("messageInput"),
+        emitEvent: "chat room typing",
+        payload: typing => ({ roomId, typing }),
+        listenEvent: "chat room typing",
+        accept: data => Number(data.roomId) === Number(roomId) && data.userId !== currentUser.id
+    });
 
     socket.on("connect", () => {
         document.getElementById("connectionStatus").style.display = "none";
@@ -1173,6 +1187,7 @@ async function sendMessage() {
 
 
     input.value = "";
+    input.dispatchEvent(new Event("blur"));
 
     cancelReply();
 
@@ -1259,7 +1274,7 @@ async function renderRoomManager() {
                 candidates.forEach(user => {
                     const option = document.createElement("option");
                     option.value = user.id;
-                    option.textContent = `${user.name} (@${user.id})`;
+                    option.textContent = `${user.displayName || user.name} (@${user.id})`;
                     select.appendChild(option);
                 });
             }
@@ -1282,7 +1297,7 @@ async function renderRoomManager() {
         identity.className = "member-identity";
         const name = document.createElement("div");
         name.className = "member-name";
-        name.textContent = member.name;
+        name.textContent = member.displayName || member.name;
         if (member.id === currentRoom.creatorId) {
             const badge = document.createElement("span");
             badge.className = "owner-badge";
@@ -1302,12 +1317,12 @@ async function renderRoomManager() {
             transfer.className = "member-action";
             transfer.type = "button";
             transfer.textContent = "방장 넘기기";
-            transfer.onclick = () => transferRoomOwner(member.id, member.name);
+            transfer.onclick = () => transferRoomOwner(member.id, member.displayName || member.name);
             const remove = document.createElement("button");
             remove.className = "member-action danger";
             remove.type = "button";
             remove.textContent = "내보내기";
-            remove.onclick = () => removeRoomMember(member.id, member.name);
+            remove.onclick = () => removeRoomMember(member.id, member.displayName || member.name);
             actions.append(transfer, remove);
             row.appendChild(actions);
         }

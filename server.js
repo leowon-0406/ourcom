@@ -15,6 +15,8 @@ const io = new Server(server);
 const PORT = Number(process.env.PORT) || 3000;
 const isProduction = process.env.NODE_ENV === "production";
 let vapidPublicKey = null;
+const onlineUsers = new Map();
+const activityUpdates = new Map();
 
 if (isProduction && !process.env.SESSION_SECRET) {
     throw new Error("SESSION_SECRET 환경 변수를 설정해주세요.");
@@ -45,6 +47,18 @@ const sessionMiddleware = session({
 });
 
 app.use(sessionMiddleware);
+app.use((req, res, next) => {
+    const userId = req.session && req.session.user && req.session.user.id;
+    if (userId) {
+        const now = Date.now();
+        if (now - (activityUpdates.get(userId) || 0) > 60_000) {
+            activityUpdates.set(userId, now);
+            void query("UPDATE users SET last_active_at = NOW() WHERE id = $1", [userId])
+                .catch(error => console.error("활동 상태 갱신 오류:", error.message));
+        }
+    }
+    next();
+});
 app.use(express.static(path.join(__dirname, "public")));
 
 const asyncHandler = handler => (req, res, next) =>
@@ -82,6 +96,10 @@ function safeText(value, maxLength = 2000) {
     return typeof value === "string"
         ? value.trim().slice(0, maxLength)
         : "";
+}
+
+function validUserId(value) {
+    return /^[A-Za-z0-9._-]{3,30}$/.test(value);
 }
 
 const CLOUDINARY_TYPES = new Set(["image", "video", "raw"]);
@@ -146,8 +164,11 @@ async function destroyAttachment(attachment) {
 }
 
 const loginAttempts = new Map();
+const registrationAttempts = new Map();
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_ATTEMPTS = 5;
+const REGISTER_WINDOW_MS = 60 * 60 * 1000;
+const REGISTER_MAX_ATTEMPTS = 5;
 
 function loginAttemptKey(req, id) {
     return `${req.ip}:${id || "unknown"}`;
@@ -270,6 +291,11 @@ async function pushToRoom(roomId, senderId, payload) {
     }
 }
 
+async function notifyRoomMembers(roomId, event, payload = {}) {
+    const result = await query("SELECT user_id FROM group_room_members WHERE room_id = $1", [roomId]);
+    result.rows.forEach(row => io.to(`private:${row.user_id}`).emit(event, { roomId, ...payload }));
+}
+
 function pushMessageBody(senderName, text, attachment) {
     const content = text || (attachment ? `📎 ${attachment.fileName || "파일"}` : "새 메시지");
     return `${senderName}: ${content}`.slice(0, 120);
@@ -287,22 +313,52 @@ async function createAdmin() {
     const id = process.env.ADMIN_ID || "leowon0406";
     const name = process.env.ADMIN_NAME || "원준영";
     const password = process.env.ADMIN_PASSWORD || "development-password";
+    const existing = await query("UPDATE users SET role = 'admin' WHERE id = $1 RETURNING id", [id]);
+    if (existing.rowCount) return;
     const passwordHash = await bcrypt.hash(password, 12);
 
     await query(
-        `INSERT INTO users (id, name, password, role)
-         VALUES ($1, $2, $3, 'admin')
-         ON CONFLICT (id) DO UPDATE SET role = 'admin'`,
+        `INSERT INTO users (id, name, password, role) VALUES ($1, $2, $3, 'admin')`,
         [id, name, passwordHash]
     );
 }
 
-async function getUsers() {
-    const result = await query(
-        "SELECT id, name, role FROM users ORDER BY name"
-    );
-    return result.rows;
-}
+app.post("/api/register", asyncHandler(async (req, res) => {
+    const id = safeText(req.body.id, 30);
+    const name = safeText(req.body.name, 40);
+    const password = typeof req.body.password === "string" ? req.body.password : "";
+    if (!validUserId(id)) {
+        return res.status(400).json({ success: false, message: "아이디는 영문, 숫자, 점, 밑줄, 하이픈으로 3~30자만 사용할 수 있습니다." });
+    }
+    if (!name || name.length > 40 || password.length < 6 || password.length > 100) {
+        return res.status(400).json({ success: false, message: "이름과 6자 이상의 비밀번호를 입력해주세요." });
+    }
+    const now = Date.now();
+    const previous = registrationAttempts.get(req.ip);
+    const attempt = previous && now - previous.startedAt < REGISTER_WINDOW_MS ? previous : { count: 0, startedAt: now };
+    if (attempt.count >= REGISTER_MAX_ATTEMPTS) {
+        return res.status(429).json({ success: false, message: "가입 요청이 너무 많습니다. 잠시 후 다시 시도해주세요." });
+    }
+    attempt.count += 1;
+    registrationAttempts.set(req.ip, attempt);
+    const exists = await query(`
+        SELECT 1 FROM users WHERE id = $1
+        UNION ALL
+        SELECT 1 FROM registration_requests WHERE id = $1 AND status = 'pending'
+        LIMIT 1
+    `, [id]);
+    if (exists.rowCount) return res.status(409).json({ success: false, message: "이미 사용 중이거나 승인 대기 중인 아이디입니다." });
+    const passwordHash = await bcrypt.hash(password, 12);
+    await query(`
+        INSERT INTO registration_requests (id, name, password, status)
+        VALUES ($1, $2, $3, 'pending')
+        ON CONFLICT (id) DO UPDATE
+        SET name = EXCLUDED.name, password = EXCLUDED.password,
+            status = 'pending', created_at = NOW(), reviewed_at = NULL
+    `, [id, name, passwordHash]);
+    io.to(`private:${process.env.ADMIN_ID || "leowon0406"}`).emit("registration request");
+    res.json({ success: true, message: "가입 승인 요청을 보냈습니다. 관리자가 승인하면 로그인할 수 있습니다." });
+}));
 
 app.post("/api/login", asyncHandler(async (req, res) => {
     const id = safeText(req.body.id, 80);
@@ -365,6 +421,34 @@ app.get("/api/me", (req, res) => {
     res.json({ loggedIn: true, user: req.session.user });
 });
 
+app.get("/api/profile", requireLogin, asyncHandler(async (req, res) => {
+    const result = await query(
+        `SELECT id, name, role, profile_image AS "profileImage" FROM users WHERE id = $1`,
+        [req.session.user.id]
+    );
+    if (!result.rowCount) return res.status(404).json({ success: false, message: "계정을 찾을 수 없습니다." });
+    res.json({ success: true, user: result.rows[0] });
+}));
+
+app.patch("/api/profile", requireLogin, asyncHandler(async (req, res) => {
+    let profileImage = null;
+    if (req.body.profileImage) {
+        profileImage = safeAttachment(req.body.profileImage, req.session.user.id);
+        if (!profileImage || profileImage.resourceType !== "image") {
+            return res.status(400).json({ success: false, message: "올바른 프로필 사진이 아닙니다." });
+        }
+    }
+    const previous = await query(
+        `SELECT profile_image AS "profileImage" FROM users WHERE id = $1`,
+        [req.session.user.id]
+    );
+    await query("UPDATE users SET profile_image = $1::jsonb WHERE id = $2", [profileImage ? JSON.stringify(profileImage) : null, req.session.user.id]);
+    const oldImage = previous.rows[0] && previous.rows[0].profileImage;
+    if (oldImage && (!profileImage || oldImage.publicId !== profileImage.publicId)) void destroyAttachment(oldImage);
+    io.emit("profile updated", { userId: req.session.user.id });
+    res.json({ success: true, profileImage });
+}));
+
 app.post("/api/cloudinary-signature", requireLogin, (req, res) => {
     if (!cloudinaryReady()) {
         return res.status(503).json({ success: false, message: "파일 저장소 설정이 완료되지 않았습니다." });
@@ -425,10 +509,12 @@ app.get("/api/users", requireLogin, asyncHandler(async (req, res) => {
     let users;
     if (req.query.sort === "recent") {
         const result = await query(`
-            SELECT u.id, u.name, u.role,
+            SELECT u.id, u.name, COALESCE(a.alias, u.name) AS "displayName", u.role,
+                   u.profile_image AS "profileImage", u.created_at AS "createdAt",
                    recent.last_message_id::int AS "lastMessageId",
                    recent.last_message_at AS "lastMessageAt"
             FROM users u
+            LEFT JOIN user_aliases a ON a.owner_id = $1 AND a.target_id = u.id
             LEFT JOIN (
                 SELECT CASE WHEN from_id = $1 THEN to_id ELSE from_id END AS friend_id,
                        MAX(id) AS last_message_id,
@@ -442,20 +528,169 @@ app.get("/api/users", requireLogin, asyncHandler(async (req, res) => {
         `, [req.session.user.id]);
         users = result.rows;
     } else {
-        users = (await getUsers()).filter(
-            user => user.id !== req.session.user.id
-        );
+        const result = await query(`
+            SELECT u.id, u.name, COALESCE(a.alias, u.name) AS "displayName", u.role,
+                   u.profile_image AS "profileImage", u.created_at AS "createdAt"
+            FROM users u
+            LEFT JOIN user_aliases a ON a.owner_id = $1 AND a.target_id = u.id
+            WHERE u.id <> $1 ORDER BY COALESCE(a.alias, u.name)
+        `, [req.session.user.id]);
+        users = result.rows;
     }
     res.json({ success: true, users });
+}));
+
+app.put("/api/users/:id/alias", requireLogin, asyncHandler(async (req, res) => {
+    const targetId = req.params.id;
+    const alias = safeText(req.body.alias, 40);
+    if (targetId === req.session.user.id) return res.status(400).json({ success: false, message: "자기 이름은 프로필에서 관리해주세요." });
+    const target = await query("SELECT 1 FROM users WHERE id = $1", [targetId]);
+    if (!target.rowCount) return res.status(404).json({ success: false, message: "사용자를 찾을 수 없습니다." });
+    if (alias) {
+        await query(`
+            INSERT INTO user_aliases (owner_id, target_id, alias) VALUES ($1, $2, $3)
+            ON CONFLICT (owner_id, target_id) DO UPDATE SET alias = EXCLUDED.alias
+        `, [req.session.user.id, targetId, alias]);
+    } else {
+        await query("DELETE FROM user_aliases WHERE owner_id = $1 AND target_id = $2", [req.session.user.id, targetId]);
+    }
+    res.json({ success: true });
+}));
+
+app.get("/api/navigation", requireLogin, asyncHandler(async (req, res) => {
+    const userId = req.session.user.id;
+    const [peopleResult, roomResult, preferenceResult] = await Promise.all([
+        query(`
+            WITH recent AS (
+                SELECT CASE WHEN from_id = $1 THEN to_id ELSE from_id END AS friend_id,
+                       MAX(id) AS last_message_id, MAX(created_at) AS last_message_at
+                FROM private_messages
+                WHERE from_id = $1 OR to_id = $1
+                GROUP BY CASE WHEN from_id = $1 THEN to_id ELSE from_id END
+            ), unread AS (
+                SELECT from_id, COUNT(*)::int AS count
+                FROM private_messages m
+                WHERE to_id = $1 AND NOT EXISTS (
+                    SELECT 1 FROM private_reads r WHERE r.message_id = m.id AND r.user_id = $1
+                ) GROUP BY from_id
+            )
+            SELECT u.id, u.name, COALESCE(a.alias, u.name) AS "displayName",
+                   u.profile_image AS "profileImage", u.created_at AS "createdAt",
+                   recent.last_message_id::int AS "lastMessageId", recent.last_message_at AS "lastMessageAt",
+                   COALESCE(unread.count, 0)::int AS "unreadCount"
+            FROM users u
+            LEFT JOIN user_aliases a ON a.owner_id = $1 AND a.target_id = u.id
+            LEFT JOIN recent ON recent.friend_id = u.id
+            LEFT JOIN unread ON unread.from_id = u.id
+            WHERE u.id <> $1
+            ORDER BY recent.last_message_id DESC NULLS LAST, COALESCE(a.alias, u.name)
+        `, [userId]),
+        query(`
+            SELECT r.id::int, r.name, r.creator_id AS "creatorId",
+                   (SELECT COUNT(*)::int FROM group_room_members members WHERE members.room_id = r.id) AS "memberCount",
+                   latest.id::int AS "lastMessageId", latest.created_at AS "lastMessageAt",
+                   (SELECT COUNT(*)::int FROM group_room_messages messages
+                    WHERE messages.room_id = r.id AND messages.user_id <> $1
+                      AND messages.created_at >= mine.joined_at
+                      AND NOT EXISTS (SELECT 1 FROM group_room_reads reads WHERE reads.message_id = messages.id AND reads.user_id = $1)) AS "unreadCount"
+            FROM group_rooms r
+            JOIN group_room_members mine ON mine.room_id = r.id AND mine.user_id = $1
+            LEFT JOIN LATERAL (
+                SELECT id, created_at FROM group_room_messages
+                WHERE room_id = r.id ORDER BY id DESC LIMIT 1
+            ) latest ON true
+            ORDER BY latest.id DESC NULLS LAST, r.created_at DESC
+        `, [userId]),
+        query(`
+            SELECT COALESCE(p.friends_seen_at, u.created_at) AS "friendsSeenAt"
+            FROM users u LEFT JOIN user_preferences p ON p.user_id = u.id WHERE u.id = $1
+        `, [userId])
+    ]);
+    const seenAt = preferenceResult.rows[0] && preferenceResult.rows[0].friendsSeenAt;
+    const people = peopleResult.rows;
+    res.json({
+        success: true,
+        chats: people.filter(person => person.lastMessageId).map(person => ({
+            ...person,
+            isNew: new Date(person.createdAt) > new Date(seenAt)
+        })),
+        friends: people.filter(person => !person.lastMessageId).map(person => ({
+            ...person,
+            isNew: new Date(person.createdAt) > new Date(seenAt)
+        })),
+        rooms: roomResult.rows,
+        newFriendCount: people.filter(person => new Date(person.createdAt) > new Date(seenAt)).length
+    });
+}));
+
+app.post("/api/friends/seen", requireLogin, asyncHandler(async (req, res) => {
+    await query(`
+        INSERT INTO user_preferences (user_id, friends_seen_at) VALUES ($1, NOW())
+        ON CONFLICT (user_id) DO UPDATE SET friends_seen_at = NOW()
+    `, [req.session.user.id]);
+    res.json({ success: true });
 }));
 
 app.get("/api/admin/users", adminOnly, asyncHandler(async (req, res) => {
     const adminId = process.env.ADMIN_ID || "leowon0406";
     const result = await query(
-        "SELECT id, name FROM users WHERE id <> $1 ORDER BY name",
+        `SELECT id, name, profile_image AS "profileImage", last_active_at AS "lastActiveAt"
+         FROM users WHERE id <> $1 ORDER BY name`,
         [adminId]
     );
-    res.json({ success: true, users: result.rows });
+    res.json({ success: true, users: result.rows.map(user => ({
+        ...user,
+        online: (onlineUsers.get(user.id) || 0) > 0 || Date.now() - new Date(user.lastActiveAt).getTime() < 120_000
+    })) });
+}));
+
+app.get("/api/admin/registration-requests", adminOnly, asyncHandler(async (req, res) => {
+    const result = await query(`
+        SELECT id, name, created_at AS "createdAt"
+        FROM registration_requests WHERE status = 'pending' ORDER BY created_at
+    `);
+    res.json({ success: true, requests: result.rows });
+}));
+
+app.post("/api/admin/registration-requests/:id/approve", adminOnly, asyncHandler(async (req, res) => {
+    const id = req.params.id;
+    await transaction(async client => {
+        const request = await client.query(
+            "SELECT id, name, password FROM registration_requests WHERE id = $1 AND status = 'pending' FOR UPDATE",
+            [id]
+        );
+        if (!request.rowCount) {
+            const error = new Error("승인 대기 중인 신청을 찾을 수 없습니다.");
+            error.status = 404;
+            throw error;
+        }
+        const account = request.rows[0];
+        const exists = await client.query("SELECT 1 FROM users WHERE id = $1", [account.id]);
+        if (exists.rowCount) {
+            const error = new Error("이미 같은 아이디의 계정이 존재합니다.");
+            error.status = 409;
+            throw error;
+        }
+        await client.query(
+            "INSERT INTO users (id, name, password, role) VALUES ($1, $2, $3, 'user')",
+            [account.id, account.name, account.password]
+        );
+        await client.query(
+            "UPDATE registration_requests SET status = 'approved', reviewed_at = NOW() WHERE id = $1",
+            [id]
+        );
+    });
+    io.emit("friends updated");
+    res.json({ success: true });
+}));
+
+app.post("/api/admin/registration-requests/:id/reject", adminOnly, asyncHandler(async (req, res) => {
+    const result = await query(
+        "UPDATE registration_requests SET status = 'rejected', reviewed_at = NOW() WHERE id = $1 AND status = 'pending'",
+        [req.params.id]
+    );
+    if (!result.rowCount) return res.status(404).json({ success: false, message: "승인 대기 중인 신청을 찾을 수 없습니다." });
+    res.json({ success: true });
 }));
 
 app.post("/api/admin/users", adminOnly, asyncHandler(async (req, res) => {
@@ -465,10 +700,10 @@ app.post("/api/admin/users", adminOnly, asyncHandler(async (req, res) => {
         ? req.body.password
         : "";
 
-    if (!id || !name || !password) {
+    if (!validUserId(id) || !name || password.length < 6 || password.length > 100) {
         return res.status(400).json({
             success: false,
-            message: "모든 항목을 입력해주세요."
+            message: "아이디 형식과 이름, 6자 이상의 비밀번호를 확인해주세요."
         });
     }
 
@@ -489,6 +724,59 @@ app.post("/api/admin/users", adminOnly, asyncHandler(async (req, res) => {
         success: true,
         message: `${name}님의 계정이 생성되었습니다.`
     });
+}));
+
+app.patch("/api/admin/users/:id/id", adminOnly, asyncHandler(async (req, res) => {
+    const oldId = req.params.id;
+    const newId = safeText(req.body.newId, 30);
+    const initialAdminId = process.env.ADMIN_ID || "leowon0406";
+    if (oldId === initialAdminId || oldId === req.session.user.id) {
+        return res.status(400).json({ success: false, message: "현재 관리자 아이디는 환경 변수와 연결되어 있어 여기서 바꿀 수 없습니다." });
+    }
+    if (!validUserId(newId)) return res.status(400).json({ success: false, message: "새 아이디 형식이 올바르지 않습니다." });
+    if (oldId === newId) return res.json({ success: true });
+    await transaction(async client => {
+        const exists = await client.query(`
+            SELECT 1 FROM users WHERE id = $1
+            UNION ALL SELECT 1 FROM registration_requests WHERE id = $1 AND status = 'pending'
+            LIMIT 1
+        `, [newId]);
+        if (exists.rowCount) {
+            const error = new Error("이미 사용 중인 아이디입니다.");
+            error.status = 409;
+            throw error;
+        }
+        const copied = await client.query(`
+            INSERT INTO users (id, name, password, role, created_at, profile_image, last_active_at)
+            SELECT $2, name, password, role, created_at, profile_image, last_active_at
+            FROM users WHERE id = $1 RETURNING id
+        `, [oldId, newId]);
+        if (!copied.rowCount) {
+            const error = new Error("사용자를 찾을 수 없습니다.");
+            error.status = 404;
+            throw error;
+        }
+        const updates = [
+            ["group_messages", "user_id"], ["group_reads", "user_id"],
+            ["private_messages", "from_id"], ["private_messages", "to_id"], ["private_reads", "user_id"],
+            ["group_rooms", "creator_id"], ["group_room_members", "user_id"],
+            ["group_room_messages", "user_id"], ["group_room_reads", "user_id"],
+            ["push_subscriptions", "user_id"], ["user_aliases", "owner_id"],
+            ["user_aliases", "target_id"], ["user_preferences", "user_id"]
+        ];
+        for (const [table, column] of updates) {
+            await client.query(`UPDATE ${table} SET ${column} = $2 WHERE ${column} = $1`, [oldId, newId]);
+        }
+        await client.query("DELETE FROM users WHERE id = $1", [oldId]);
+    });
+    await query(`
+        UPDATE user_sessions
+        SET sess = jsonb_set(sess::jsonb, '{user,id}', to_jsonb($2::text))::json
+        WHERE sess->'user'->>'id' = $1
+    `, [oldId, newId]).catch(() => {});
+    io.to(`private:${oldId}`).emit("account id changed", { newId });
+    io.emit("friends updated");
+    res.json({ success: true });
 }));
 
 app.delete("/api/admin/users/:id", adminOnly, asyncHandler(async (req, res) => {
@@ -529,15 +817,16 @@ app.get("/api/group-messages/search", requireLogin, asyncHandler(async (req, res
     const term = safeText(req.query.q, 100);
     if (term.length < 1) return res.json({ success: true, messages: [] });
     const result = await query(`
-        SELECT m.id::int, m.user_name AS "senderName", m.text, m.time,
+        SELECT m.id::int, COALESCE(a.alias, m.user_name) AS "senderName", m.text, m.time,
                CASE WHEN m.deleted_at IS NULL THEN m.attachment END AS attachment
         FROM group_messages m
+        LEFT JOIN user_aliases a ON a.owner_id = $2 AND a.target_id = m.user_id
         WHERE m.deleted_at IS NULL
-          AND (m.text ILIKE $1 OR m.user_name ILIKE $1
+          AND (m.text ILIKE $1 OR m.user_name ILIKE $1 OR COALESCE(a.alias, '') ILIKE $1
                OR COALESCE(m.attachment->>'fileName', '') ILIKE $1)
         ORDER BY m.id DESC
         LIMIT 50
-    `, [`%${term}%`]);
+    `, [`%${term}%`, req.session.user.id]);
     res.json({ success: true, messages: result.rows });
 }));
 
@@ -605,10 +894,12 @@ app.get("/api/private-messages/:userId", requireLogin,
         const me = req.session.user.id;
         const other = req.params.userId;
         const before = beforeId(req.query.before);
-        const userResult = await query(
-            "SELECT id, name, role FROM users WHERE id = $1",
-            [other]
-        );
+        const userResult = await query(`
+            SELECT u.id, u.name, COALESCE(a.alias, u.name) AS "displayName", u.role,
+                   u.profile_image AS "profileImage"
+            FROM users u LEFT JOIN user_aliases a ON a.owner_id = $2 AND a.target_id = u.id
+            WHERE u.id = $1
+        `, [other, me]);
         const otherUser = userResult.rows[0];
 
         if (!otherUser) {
@@ -646,9 +937,10 @@ app.get("/api/private-messages/:userId/search", requireLogin,
         const term = safeText(req.query.q, 100);
         if (term.length < 1) return res.json({ success: true, messages: [] });
         const result = await query(`
-            SELECT m.id::int, m.from_name AS "senderName", m.text, m.time,
+            SELECT m.id::int, COALESCE(a.alias, m.from_name) AS "senderName", m.text, m.time,
                    CASE WHEN m.deleted_at IS NULL THEN m.attachment END AS attachment
             FROM private_messages m
+            LEFT JOIN user_aliases a ON a.owner_id = $1 AND a.target_id = m.from_id
             WHERE ((m.from_id = $1 AND m.to_id = $2)
                OR (m.from_id = $2 AND m.to_id = $1))
               AND m.deleted_at IS NULL
@@ -877,10 +1169,11 @@ app.get("/api/chat-rooms/:roomId", requireLogin,
         const roomId = Number(req.params.roomId);
         const result = await query(`
             SELECT r.id::int, r.name, r.creator_id AS "creatorId",
-                   r.creator_name AS "creatorName", r.created_at AS "createdAt"
+                   COALESCE(a.alias, r.creator_name) AS "creatorName", r.created_at AS "createdAt"
             FROM group_rooms r
             JOIN group_room_members m
               ON m.room_id = r.id AND m.user_id = $2
+            LEFT JOIN user_aliases a ON a.owner_id = $2 AND a.target_id = r.creator_id
             WHERE r.id = $1
         `, [roomId, req.session.user.id]);
         const room = result.rows[0];
@@ -893,11 +1186,13 @@ app.get("/api/chat-rooms/:roomId", requireLogin,
         }
 
         const members = await query(`
-            SELECT user_id AS id, user_name AS name
-            FROM group_room_members
-            WHERE room_id = $1
-            ORDER BY user_name
-        `, [roomId]);
+            SELECT members.user_id AS id, members.user_name AS name,
+                   COALESCE(a.alias, members.user_name) AS "displayName"
+            FROM group_room_members members
+            LEFT JOIN user_aliases a ON a.owner_id = $2 AND a.target_id = members.user_id
+            WHERE members.room_id = $1
+            ORDER BY COALESCE(a.alias, members.user_name)
+        `, [roomId, req.session.user.id]);
         res.json({ success: true, room, members: members.rows });
     })
 );
@@ -1013,15 +1308,16 @@ app.get("/api/chat-rooms/:roomId/messages/search", requireLogin,
         if (!member.rowCount) return res.status(403).json({ success: false, message: "채팅방 멤버가 아닙니다." });
         if (term.length < 1) return res.json({ success: true, messages: [] });
         const result = await query(`
-            SELECT m.id::int, m.user_name AS "senderName", m.text, m.time,
+            SELECT m.id::int, COALESCE(a.alias, m.user_name) AS "senderName", m.text, m.time,
                    CASE WHEN m.deleted_at IS NULL THEN m.attachment END AS attachment
             FROM group_room_messages m
+            LEFT JOIN user_aliases a ON a.owner_id = $3 AND a.target_id = m.user_id
             WHERE m.room_id = $1 AND m.deleted_at IS NULL
-              AND (m.text ILIKE $2 OR m.user_name ILIKE $2
+              AND (m.text ILIKE $2 OR m.user_name ILIKE $2 OR COALESCE(a.alias, '') ILIKE $2
                    OR COALESCE(m.attachment->>'fileName', '') ILIKE $2)
             ORDER BY m.id DESC
             LIMIT 50
-        `, [roomId, `%${term}%`]);
+        `, [roomId, `%${term}%`, req.session.user.id]);
         res.json({ success: true, messages: result.rows });
     })
 );
@@ -1142,13 +1438,23 @@ app.get("/api/unread-summary", requireLogin, asyncHandler(async (req, res) => {
                AND NOT EXISTS (
                    SELECT 1 FROM group_room_reads r
                    WHERE r.message_id = m.id AND r.user_id = $1
-               )) AS "roomCount"
+               )) AS "roomCount",
+            (SELECT COUNT(*)::int FROM users friend
+             JOIN users me ON me.id = $1
+             LEFT JOIN user_preferences pref ON pref.user_id = me.id
+             WHERE friend.id <> $1
+               AND friend.created_at > COALESCE(pref.friends_seen_at, me.created_at)) AS "newFriendCount"
     `, [userId]);
     const counts = result.rows[0];
+    const pendingRegistrationCount = req.session.user.role === "admin"
+        ? Number((await query("SELECT COUNT(*)::int AS count FROM registration_requests WHERE status = 'pending'")).rows[0].count)
+        : 0;
     res.json({
         success: true,
         ...counts,
-        hasUnread: counts.globalCount + counts.privateCount + counts.roomCount > 0
+        hasUnread: counts.globalCount + counts.privateCount + counts.roomCount > 0,
+        hasAttention: counts.globalCount + counts.privateCount + counts.roomCount + counts.newFriendCount + pendingRegistrationCount > 0,
+        pendingRegistrationCount
     });
 }));
 
@@ -1207,6 +1513,8 @@ io.use((socket, next) => {
 
 io.on("connection", socket => {
     const userId = socket.user.id;
+    onlineUsers.set(userId, (onlineUsers.get(userId) || 0) + 1);
+    void query("UPDATE users SET last_active_at = NOW() WHERE id = $1", [userId]);
     socket.join(`private:${userId}`);
 
     const guard = handler => async (...args) => {
@@ -1217,6 +1525,23 @@ io.on("connection", socket => {
             socket.emit("server error", "요청을 처리하지 못했습니다.");
         }
     };
+
+    socket.on("group typing", value => {
+        socket.to("group").emit("group typing", { userId, name: socket.user.name, typing: Boolean(value) });
+    });
+
+    socket.on("private typing", data => {
+        const toId = data && typeof data.toId === "string" ? data.toId : "";
+        if (!toId || toId === userId) return;
+        socket.to(`private:${toId}`).emit("private typing", { userId, name: socket.user.name, typing: Boolean(data.typing) });
+    });
+
+    socket.on("chat room typing", guard(async data => {
+        const roomId = Number(data && data.roomId);
+        if (!Number.isInteger(roomId)) return;
+        const member = await query("SELECT 1 FROM group_room_members WHERE room_id = $1 AND user_id = $2", [roomId, userId]);
+        if (member.rowCount) socket.to(`chatroom:${roomId}`).emit("chat room typing", { roomId, userId, name: socket.user.name, typing: Boolean(data.typing) });
+    }));
 
     socket.on("join group", guard(async () => {
         socket.join("group");
@@ -1286,6 +1611,7 @@ io.on("connection", socket => {
             replyToText: reply && reply.replyToText,
             clientId
         });
+        io.emit("unread changed");
         if (result.rows[0].inserted) void pushToAllExcept(userId, {
             title: "OURCOM 전체 채팅",
             body: pushMessageBody(socket.user.name, text, attachment),
@@ -1310,10 +1636,12 @@ io.on("connection", socket => {
 
     socket.on("join private", guard(async otherId => {
         if (typeof otherId !== "string" || otherId === userId) return;
-        const otherResult = await query(
-            "SELECT id, name FROM users WHERE id = $1",
-            [otherId]
-        );
+        const otherResult = await query(`
+            SELECT u.id, u.name, COALESCE(a.alias, u.name) AS "displayName",
+                   u.profile_image AS "profileImage"
+            FROM users u LEFT JOIN user_aliases a ON a.owner_id = $2 AND a.target_id = u.id
+            WHERE u.id = $1
+        `, [otherId, userId]);
         if (!otherResult.rowCount) return;
         const result = await query(`
             SELECT m.id::int, m.from_id AS "fromId", m.from_name AS "fromName",
@@ -1394,6 +1722,7 @@ io.on("connection", socket => {
         };
         io.to(`private:${userId}`).to(`private:${toId}`)
             .emit("private message", message);
+        io.to(`private:${toId}`).emit("unread changed");
         if (result.rows[0].inserted) void sendPushToUsers([toId], {
             title: socket.user.name,
             body: text || (attachment ? `📎 ${attachment.fileName || "파일"}` : "새 메시지"),
@@ -1490,6 +1819,7 @@ io.on("connection", socket => {
             replyToText: reply && reply.replyToText,
             clientId
         });
+        void notifyRoomMembers(roomId, "unread changed");
         if (result.rows[0].inserted) void pushToRoom(roomId, userId, {
             title: "OURCOM 단체 채팅",
             body: pushMessageBody(socket.user.name, text, attachment),
@@ -1609,14 +1939,21 @@ io.on("connection", socket => {
             deleted: true
         });
     }));
+
+    socket.on("disconnect", () => {
+        const remaining = Math.max((onlineUsers.get(userId) || 1) - 1, 0);
+        if (remaining) onlineUsers.set(userId, remaining);
+        else onlineUsers.delete(userId);
+        void query("UPDATE users SET last_active_at = NOW() WHERE id = $1", [userId]);
+    });
 });
 
 app.use((error, req, res, next) => {
     console.error(error);
     if (res.headersSent) return next(error);
-    res.status(500).json({
+    res.status(Number.isInteger(error.status) ? error.status : 500).json({
         success: false,
-        message: "서버 오류가 발생했습니다."
+        message: Number.isInteger(error.status) ? error.message : "서버 오류가 발생했습니다."
     });
 });
 

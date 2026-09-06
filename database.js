@@ -116,6 +116,27 @@ async function initializeDatabase() {
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
 
+        CREATE TABLE IF NOT EXISTS user_aliases (
+            owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
+            target_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
+            alias TEXT NOT NULL,
+            PRIMARY KEY (owner_id, target_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS user_preferences (
+            user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
+            friends_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS registration_requests (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            password TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            reviewed_at TIMESTAMPTZ
+        );
+
         CREATE INDEX IF NOT EXISTS private_messages_to_from_idx
             ON private_messages (to_id, from_id, id);
         CREATE INDEX IF NOT EXISTS private_reads_user_idx
@@ -133,6 +154,10 @@ async function initializeDatabase() {
             ADD COLUMN IF NOT EXISTS reply_to_id BIGINT;
         ALTER TABLE users
             ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+        ALTER TABLE users
+            ADD COLUMN IF NOT EXISTS profile_image JSONB;
+        ALTER TABLE users
+            ADD COLUMN IF NOT EXISTS last_active_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
         ALTER TABLE group_messages
             ADD COLUMN IF NOT EXISTS client_id TEXT;
         ALTER TABLE private_messages
@@ -178,6 +203,10 @@ async function initializeDatabase() {
             ON group_messages (id DESC);
         CREATE INDEX IF NOT EXISTS private_messages_conversation_idx
             ON private_messages (from_id, to_id, id DESC);
+        CREATE INDEX IF NOT EXISTS private_messages_from_recent_idx
+            ON private_messages (from_id, id DESC);
+        CREATE INDEX IF NOT EXISTS private_messages_to_recent_idx
+            ON private_messages (to_id, id DESC);
         CREATE INDEX IF NOT EXISTS group_room_messages_page_idx
             ON group_room_messages (room_id, id DESC);
         CREATE UNIQUE INDEX IF NOT EXISTS group_messages_client_idx
@@ -186,6 +215,10 @@ async function initializeDatabase() {
             ON private_messages (from_id, client_id) WHERE client_id IS NOT NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS group_room_messages_client_idx
             ON group_room_messages (room_id, user_id, client_id) WHERE client_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS users_created_idx ON users (created_at DESC);
+        CREATE INDEX IF NOT EXISTS users_active_idx ON users (last_active_at DESC);
+        CREATE INDEX IF NOT EXISTS registration_requests_status_idx
+            ON registration_requests (status, created_at DESC);
     `);
 }
 

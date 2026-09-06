@@ -387,7 +387,7 @@ body {
         </div>
 
 
-        <!-- 1:1 채팅 -->
+        <!-- 채팅 -->
 
         <div
             class="menu"
@@ -397,12 +397,12 @@ body {
             <span id="privateUnreadDot" class="notification-dot"></span>
 
             <div class="menu-title">
-                1:1 채팅
+                채팅
             </div>
 
             <div class="menu-description">
-                친구를 선택해서
-                개인적으로 대화할 수 있습니다.
+                최근 대화와 단체방을
+                한곳에서 확인합니다.
             </div>
 
         </div>
@@ -412,8 +412,10 @@ body {
 
         <div
             class="menu"
-            onclick="openFriends()"
+            onclick="openFriendList()"
         >
+
+            <span id="newFriendDot" class="notification-dot"></span>
 
             <div class="menu-title">
                 친구
@@ -421,7 +423,7 @@ body {
 
             <div class="menu-description">
                 등록된 친구를 확인하고
-                1:1 채팅을 시작할 수 있습니다.
+                개인 채팅을 시작할 수 있습니다.
             </div>
 
         </div>
@@ -437,7 +439,7 @@ body {
             <span id="roomUnreadDot" class="notification-dot"></span>
 
             <div class="menu-title">
-                단체 채팅
+                새 단체방
             </div>
 
             <div class="menu-description">
@@ -456,6 +458,8 @@ body {
             style="display:none"
             onclick="openAdmin()"
         >
+
+            <span id="adminRequestDot" class="notification-dot"></span>
 
             <div class="menu-title">
                 관리자
@@ -492,6 +496,7 @@ body {
         <div class="app-settings">
             <div class="user-title">OURCOM 앱 설정</div>
             <div class="app-buttons">
+                <button class="app-button" type="button" onclick="location.href='/profile.html'">프로필 사진</button>
                 <button id="installAppButton" class="app-button" type="button" onclick="OurcomPWA.installApp()">
                     앱 설치
                 </button>
@@ -508,6 +513,7 @@ body {
 </div>
 
 
+<script src="/socket.io/socket.io.js"></script>
 <script>
 
 /* ==================================================
@@ -577,10 +583,12 @@ async function loadUnreadSummary() {
         const response = await fetch("/api/unread-summary");
         const data = await response.json();
         if (!data.success) return;
-        document.getElementById("anyUnreadDot").style.display = data.hasUnread ? "inline-block" : "none";
+        document.getElementById("anyUnreadDot").style.display = data.hasAttention ? "inline-block" : "none";
         document.getElementById("globalUnreadDot").style.display = data.globalCount > 0 ? "block" : "none";
         document.getElementById("privateUnreadDot").style.display = data.privateCount > 0 ? "block" : "none";
         document.getElementById("roomUnreadDot").style.display = data.roomCount > 0 ? "block" : "none";
+        document.getElementById("newFriendDot").style.display = data.newFriendCount > 0 ? "block" : "none";
+        document.getElementById("adminRequestDot").style.display = data.pendingRegistrationCount > 0 ? "block" : "none";
     } catch (error) {
         console.error("안 읽은 메시지 확인 오류:", error);
     }
@@ -613,6 +621,10 @@ function openFriends() {
     location.href =
         "/friends.html";
 
+}
+
+function openFriendList() {
+    location.href = "/friends.html?tab=friend";
 }
 
 
@@ -695,7 +707,15 @@ async function enablePushNotifications() {
 
 loadUser();
 loadUnreadSummary();
-setInterval(loadUnreadSummary, 5000);
+const notificationSocket = io();
+notificationSocket.on("account id changed", () => { alert("관리자가 아이디를 변경했습니다. 새 아이디로 다시 접속합니다."); location.reload(); });
+let summaryTimer;
+["unread changed", "friends updated", "private message", "chat room invitation", "registration request"].forEach(eventName => {
+    notificationSocket.on(eventName, () => {
+        clearTimeout(summaryTimer);
+        summaryTimer = setTimeout(loadUnreadSummary, 100);
+    });
+});
 document.addEventListener("visibilitychange", () => {
     if (!document.hidden) loadUnreadSummary();
 });

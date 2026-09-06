@@ -14,7 +14,7 @@
         content="width=device-width, initial-scale=1.0"
     >
 
-    <title>OURCOM 1:1 채팅</title>
+    <title>OURCOM 채팅</title>
 
     <style>
 
@@ -270,6 +270,7 @@
             margin-top: 30px;
         }
 
+        @media(max-width:650px){.header{height:54px;padding:0 8px}.chat{height:calc(100dvh - 54px)}.title{font-size:14px}.subtitle{font-size:9px}.messages{padding:11px 8px}.bubble{max-width:82%;padding:9px 11px;font-size:12px}.input-area{padding:8px}.attach-button{width:36px!important;margin-right:6px!important}.input-area #messageInput{min-width:0;padding:10px;font-size:12px}.input-area #sendButton{margin-left:6px;padding:0 12px;font-size:11px}.back{padding:7px 8px;font-size:11px}.time,.reply-button,.message-action{font-size:9px}}
     </style>
 
 </head>
@@ -290,7 +291,7 @@
         </div>
 
         <div class="subtitle">
-            1:1 채팅
+            채팅
         </div>
 
     </div>
@@ -300,7 +301,7 @@
         class="back"
         onclick="location.href='/friends.html'"
     >
-        ← 친구
+        채팅 목록
     </button>
 
 </div>
@@ -352,11 +353,13 @@
 <script src="/socket.io/socket.io.js"></script>
 <script src="/chat-attachments.js"></script>
 <script src="/chat-tools.js"></script>
+<script src="/chat-typing.js"></script>
 
 
 <script>
 
 let currentUser = null;
+let friendInfo = null;
 
 let friendId = null;
 
@@ -419,7 +422,7 @@ function visibleMessageIds() {
 function startReply(message) {
     replyingTo = {
         id: message.id,
-        name: message.fromName,
+        name: message.fromId === friendId ? (friendInfo?.displayName || message.fromName) : message.fromName,
         text: OurcomFiles.preview(message)
     };
     document.getElementById("replyPreviewName").textContent = `${replyingTo.name}님에게 답장`;
@@ -550,6 +553,8 @@ async function loadFriend() {
                 user.id === friendId
         );
 
+    friendInfo = friend;
+
 
     if (!friend) {
 
@@ -568,7 +573,7 @@ async function loadFriend() {
     document
         .getElementById("friendName")
         .textContent =
-        friend.name;
+        friend.displayName || friend.name;
 
 
     return true;
@@ -983,6 +988,16 @@ async function startChat() {
 
 
     socket = io();
+    socket.on("account id changed", () => { alert("관리자가 아이디를 변경했습니다. 새 아이디로 다시 접속합니다."); location.reload(); });
+
+    OurcomTyping.init({
+        socket,
+        input: document.getElementById("messageInput"),
+        emitEvent: "private typing",
+        payload: typing => ({ toId: friendId, typing }),
+        listenEvent: "private typing",
+        accept: data => data.userId === friendId
+    });
 
 
     /* =====================================
@@ -996,7 +1011,7 @@ async function startChat() {
             document.getElementById("connectionStatus").style.display = "none";
 
             console.log(
-                "OURCOM 1:1 채팅 연결 완료"
+                "OURCOM 채팅 연결 완료"
             );
 
 
@@ -1038,7 +1053,7 @@ async function startChat() {
             hasMoreMessages = Boolean(history && history.hasMore);
 
             if (history && history.user) {
-                document.getElementById("friendName").textContent = history.user.name;
+                document.getElementById("friendName").textContent = friendInfo?.displayName || history.user.displayName || history.user.name;
             }
 
 
@@ -1056,8 +1071,8 @@ async function startChat() {
                 messages
             );
 
-            if (data.firstUnreadId) {
-                OurcomChatTools.showUnreadMarker(data.firstUnreadId);
+            if (history.firstUnreadId) {
+                OurcomChatTools.showUnreadMarker(history.firstUnreadId);
             }
 
         }
@@ -1225,6 +1240,7 @@ async function startChat() {
 
 
         input.value = "";
+        input.dispatchEvent(new Event("blur"));
 
         cancelReply();
 

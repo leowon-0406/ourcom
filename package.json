@@ -5,7 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --check server.js && node --check database.js && node --check public/pwa.js && node --check public/service-worker.js && node --check public/chat-attachments.js && node --check public/chat-tools.js"
+    "test": "node --check server.js && node --check database.js && node --check public/pwa.js && node --check public/service-worker.js && node --check public/chat-attachments.js && node --check public/chat-tools.js && node --check public/chat-typing.js"
   },
   "keywords": [],
   "author": "",
