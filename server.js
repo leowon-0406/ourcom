@@ -5,6 +5,7 @@ const session = require("express-session");
 const pgSession = require("connect-pg-simple")(session);
 const bcrypt = require("bcrypt");
 const crypto = require("crypto");
+const webpush = require("web-push");
 const { Server } = require("socket.io");
 const { pool, query, transaction, initializeDatabase } = require("./database");
 
@@ -13,6 +14,7 @@ const server = http.createServer(app);
 const io = new Server(server);
 const PORT = Number(process.env.PORT) || 3000;
 const isProduction = process.env.NODE_ENV === "production";
+let vapidPublicKey = null;
 
 if (isProduction && !process.env.SESSION_SECRET) {
     throw new Error("SESSION_SECRET 환경 변수를 설정해주세요.");
@@ -163,6 +165,116 @@ function beforeId(value) {
     return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
+async function initializePushNotifications() {
+    let publicKey = process.env.VAPID_PUBLIC_KEY || "";
+    let privateKey = process.env.VAPID_PRIVATE_KEY || "";
+
+    if (!publicKey || !privateKey) {
+        const saved = await query(
+            "SELECT key, value FROM app_settings WHERE key = ANY($1::text[])",
+            [["vapid_public_key", "vapid_private_key"]]
+        );
+        const settings = Object.fromEntries(saved.rows.map(row => [row.key, row.value]));
+        publicKey = settings.vapid_public_key || "";
+        privateKey = settings.vapid_private_key || "";
+    }
+
+    if (!publicKey || !privateKey) {
+        const generated = webpush.generateVAPIDKeys();
+        publicKey = generated.publicKey;
+        privateKey = generated.privateKey;
+        await transaction(async client => {
+            await client.query(`
+                INSERT INTO app_settings (key, value)
+                VALUES ('vapid_public_key', $1), ('vapid_private_key', $2)
+                ON CONFLICT (key) DO NOTHING
+            `, [publicKey, privateKey]);
+            const stored = await client.query(
+                "SELECT key, value FROM app_settings WHERE key = ANY($1::text[])",
+                [["vapid_public_key", "vapid_private_key"]]
+            );
+            const values = Object.fromEntries(stored.rows.map(row => [row.key, row.value]));
+            publicKey = values.vapid_public_key;
+            privateKey = values.vapid_private_key;
+        });
+    }
+
+    webpush.setVapidDetails(
+        process.env.VAPID_SUBJECT || "https://ourcom.onrender.com",
+        publicKey,
+        privateKey
+    );
+    vapidPublicKey = publicKey;
+}
+
+function safePushSubscription(value) {
+    if (!value || typeof value !== "object" || typeof value.endpoint !== "string" ||
+        !value.keys || typeof value.keys.p256dh !== "string" || typeof value.keys.auth !== "string") return null;
+    try {
+        const endpoint = new URL(value.endpoint);
+        if (endpoint.protocol !== "https:") return null;
+    } catch {
+        return null;
+    }
+    if (value.endpoint.length > 2000 || value.keys.p256dh.length > 500 || value.keys.auth.length > 200) return null;
+    return {
+        endpoint: value.endpoint,
+        expirationTime: Number.isFinite(value.expirationTime) ? value.expirationTime : null,
+        keys: { p256dh: value.keys.p256dh, auth: value.keys.auth }
+    };
+}
+
+async function sendPushToUsers(userIds, payload) {
+    const ids = [...new Set(userIds.filter(Boolean))];
+    if (!ids.length || !vapidPublicKey) return;
+    try {
+        const subscriptions = await query(`
+            SELECT endpoint, subscription
+            FROM push_subscriptions
+            WHERE user_id = ANY($1::text[])
+        `, [ids]);
+        await Promise.all(subscriptions.rows.map(async row => {
+            try {
+                await webpush.sendNotification(row.subscription, JSON.stringify(payload), { TTL: 120 });
+            } catch (error) {
+                if (error.statusCode === 404 || error.statusCode === 410) {
+                    await query("DELETE FROM push_subscriptions WHERE endpoint = $1", [row.endpoint]);
+                } else {
+                    console.error("푸시 알림 전송 오류:", error.statusCode || error.message);
+                }
+            }
+        }));
+    } catch (error) {
+        console.error("푸시 알림 처리 오류:", error.message);
+    }
+}
+
+async function pushToAllExcept(senderId, payload) {
+    try {
+        const result = await query("SELECT id FROM users WHERE id <> $1", [senderId]);
+        await sendPushToUsers(result.rows.map(row => row.id), payload);
+    } catch (error) {
+        console.error("전체 푸시 대상 조회 오류:", error.message);
+    }
+}
+
+async function pushToRoom(roomId, senderId, payload) {
+    try {
+        const result = await query(
+            "SELECT user_id FROM group_room_members WHERE room_id = $1 AND user_id <> $2",
+            [roomId, senderId]
+        );
+        await sendPushToUsers(result.rows.map(row => row.user_id), payload);
+    } catch (error) {
+        console.error("단톡방 푸시 대상 조회 오류:", error.message);
+    }
+}
+
+function pushMessageBody(senderName, text, attachment) {
+    const content = text || (attachment ? `📎 ${attachment.fileName || "파일"}` : "새 메시지");
+    return `${senderName}: ${content}`.slice(0, 120);
+}
+
 function requestedMessageIds(req) {
     return String(req.query.ids || "")
         .split(",")
@@ -274,6 +386,40 @@ app.post("/api/cloudinary-signature", requireLogin, (req, res) => {
         signature: cloudinarySignature(params)
     });
 });
+
+app.get("/api/push/public-key", requireLogin, (req, res) => {
+    if (!vapidPublicKey) {
+        return res.status(503).json({ success: false, message: "푸시 알림을 준비하는 중입니다." });
+    }
+    res.json({ success: true, publicKey: vapidPublicKey });
+});
+
+app.post("/api/push/subscribe", requireLogin, asyncHandler(async (req, res) => {
+    const subscription = safePushSubscription(req.body.subscription);
+    if (!subscription) {
+        return res.status(400).json({ success: false, message: "올바르지 않은 푸시 구독 정보입니다." });
+    }
+    await query(`
+        INSERT INTO push_subscriptions (endpoint, user_id, subscription)
+        VALUES ($1, $2, $3::jsonb)
+        ON CONFLICT (endpoint) DO UPDATE
+        SET user_id = EXCLUDED.user_id,
+            subscription = EXCLUDED.subscription,
+            updated_at = NOW()
+    `, [subscription.endpoint, req.session.user.id, JSON.stringify(subscription)]);
+    res.json({ success: true });
+}));
+
+app.delete("/api/push/subscribe", requireLogin, asyncHandler(async (req, res) => {
+    const endpoint = safeText(req.body.endpoint, 2000);
+    if (endpoint) {
+        await query(
+            "DELETE FROM push_subscriptions WHERE endpoint = $1 AND user_id = $2",
+            [endpoint, req.session.user.id]
+        );
+    }
+    res.json({ success: true });
+}));
 
 app.get("/api/users", requireLogin, asyncHandler(async (req, res) => {
     const users = (await getUsers()).filter(
@@ -947,7 +1093,7 @@ io.on("connection", socket => {
             VALUES ($1, $2, $3, $4, $5, $6, $7)
             ON CONFLICT (user_id, client_id) WHERE client_id IS NOT NULL
             DO UPDATE SET client_id = EXCLUDED.client_id
-            RETURNING id::int, time
+            RETURNING id::int, time, (xmax = 0) AS inserted
         `, [userId, socket.user.name, text, time, reply && reply.id, clientId, attachment]);
         io.to("group").emit("group message", {
             id: result.rows[0].id,
@@ -960,6 +1106,12 @@ io.on("connection", socket => {
             replyToName: reply && reply.replyToName,
             replyToText: reply && reply.replyToText,
             clientId
+        });
+        if (result.rows[0].inserted) void pushToAllExcept(userId, {
+            title: "OURCOM 전체 채팅",
+            body: pushMessageBody(socket.user.name, text, attachment),
+            url: "/group.html",
+            tag: "ourcom-global"
         });
     }));
 
@@ -1036,7 +1188,7 @@ io.on("connection", socket => {
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             ON CONFLICT (from_id, client_id) WHERE client_id IS NOT NULL
             DO UPDATE SET client_id = EXCLUDED.client_id
-            RETURNING id::int, time
+            RETURNING id::int, time, (xmax = 0) AS inserted
         `, [userId, socket.user.name, toId, text, time, reply && reply.id, clientId, attachment]);
         const message = {
             id: result.rows[0].id,
@@ -1053,6 +1205,12 @@ io.on("connection", socket => {
         };
         io.to(`private:${userId}`).to(`private:${toId}`)
             .emit("private message", message);
+        if (result.rows[0].inserted) void sendPushToUsers([toId], {
+            title: socket.user.name,
+            body: text || (attachment ? `📎 ${attachment.fileName || "파일"}` : "새 메시지"),
+            url: `/private.html?id=${encodeURIComponent(userId)}`,
+            tag: `ourcom-private-${userId}`
+        });
     }));
 
     socket.on("join chat room", guard(async value => {
@@ -1112,7 +1270,7 @@ io.on("connection", socket => {
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             ON CONFLICT (room_id, user_id, client_id) WHERE client_id IS NOT NULL
             DO UPDATE SET client_id = EXCLUDED.client_id
-            RETURNING id::int, time
+            RETURNING id::int, time, (xmax = 0) AS inserted
         `, [roomId, userId, socket.user.name, text, time, reply && reply.id, clientId, attachment]);
         io.to(`chatroom:${roomId}`).emit("chat room message", {
             id: result.rows[0].id,
@@ -1126,6 +1284,12 @@ io.on("connection", socket => {
             replyToName: reply && reply.replyToName,
             replyToText: reply && reply.replyToText,
             clientId
+        });
+        if (result.rows[0].inserted) void pushToRoom(roomId, userId, {
+            title: "OURCOM 단체 채팅",
+            body: pushMessageBody(socket.user.name, text, attachment),
+            url: `/group-room.html?id=${roomId}`,
+            tag: `ourcom-room-${roomId}`
         });
     }));
 
@@ -1253,6 +1417,7 @@ app.use((error, req, res, next) => {
 
 async function start() {
     await initializeDatabase();
+    await initializePushNotifications();
     await createAdmin();
     server.listen(PORT, () => {
         console.log(`OURCOM 서버 실행: ${PORT}번 포트`);

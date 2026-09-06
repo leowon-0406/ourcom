@@ -2,6 +2,12 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
+<meta name="theme-color" content="#111827">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icons/ourcom-192.png">
+<script defer src="/pwa.js"></script>
 
 <meta
     name="viewport"
@@ -231,6 +237,37 @@ body {
     font-size: 14px;
 }
 
+.app-settings {
+    margin-top: 18px;
+    padding-top: 16px;
+    border-top: 1px solid #e5e7eb;
+}
+
+.app-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 12px;
+}
+
+.app-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 42px;
+    padding: 10px 15px;
+    border: 0;
+    border-radius: 11px;
+    background: #111827;
+    color: white;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+.app-button.secondary { background: #4f46e5; }
+.app-button:disabled { opacity: .55; cursor: default; }
+.push-status { margin-top: 9px; color: #6b7280; font-size: 13px; }
+
 /* =========================
    모바일
 ========================= */
@@ -455,6 +492,19 @@ body {
             불러오는 중...
         </div>
 
+        <div class="app-settings">
+            <div class="user-title">OURCOM 앱 설정</div>
+            <div class="app-buttons">
+                <button id="installAppButton" class="app-button" type="button" onclick="OurcomPWA.installApp()">
+                    📲 앱 설치
+                </button>
+                <button id="enablePushButton" class="app-button secondary" type="button" onclick="enablePushNotifications()">
+                    🔕 푸시 알림 켜기
+                </button>
+            </div>
+            <div id="pushStatus" class="push-status">알림 상태를 확인하는 중...</div>
+        </div>
+
     </div>
 
 
@@ -605,6 +655,8 @@ async function logout() {
 
     try {
 
+        await OurcomPWA.unsubscribePush();
+
         await fetch(
             "/api/logout",
             {
@@ -623,6 +675,20 @@ async function logout() {
 
     location.href = "/";
 
+}
+
+async function enablePushNotifications() {
+    const button = document.getElementById("enablePushButton");
+    button.disabled = true;
+    try {
+        const enabled = await OurcomPWA.enablePush();
+        if (enabled) alert("푸시 알림이 켜졌습니다!");
+    } catch (error) {
+        console.error(error);
+        alert(error.message || "푸시 알림을 켜지 못했습니다.");
+    } finally {
+        await OurcomPWA.updateButtons();
+    }
 }
 
 

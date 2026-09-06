@@ -5,7 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --check server.js && node --check database.js"
+    "test": "node --check server.js && node --check database.js && node --check public/pwa.js && node --check public/service-worker.js && node --check public/chat-attachments.js"
   },
   "keywords": [],
   "author": "",
@@ -17,6 +17,7 @@
     "express": "^5.2.1",
     "express-session": "^1.19.0",
     "pg": "^8.16.3",
-    "socket.io": "^4.8.3"
+    "socket.io": "^4.8.3",
+    "web-push": "^3.6.7"
   }
 }

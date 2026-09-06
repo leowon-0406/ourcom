@@ -102,12 +102,27 @@ async function initializeDatabase() {
             PRIMARY KEY (message_id, user_id)
         );
 
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS push_subscriptions (
+            endpoint TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            subscription JSONB NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
         CREATE INDEX IF NOT EXISTS private_messages_to_from_idx
             ON private_messages (to_id, from_id, id);
         CREATE INDEX IF NOT EXISTS private_reads_user_idx
             ON private_reads (user_id, message_id);
         CREATE INDEX IF NOT EXISTS group_room_members_user_idx
             ON group_room_members (user_id, room_id);
+        CREATE INDEX IF NOT EXISTS push_subscriptions_user_idx
+            ON push_subscriptions (user_id);
 
         ALTER TABLE group_messages
             ADD COLUMN IF NOT EXISTS reply_to_id BIGINT;
