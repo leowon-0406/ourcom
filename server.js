@@ -1081,6 +1081,7 @@ io.on("connection", socket => {
                    m.text, m.time, CASE WHEN m.deleted_at IS NULL THEN m.attachment END AS attachment,
                    (m.edited_at IS NOT NULL) AS edited,
                    (m.deleted_at IS NOT NULL) AS deleted,
+                   m.reply_to_id::int AS "replyToId",
                    reply.user_name AS "replyToName",
                    COALESCE(NULLIF(reply.text, ''), CASE WHEN reply.attachment IS NOT NULL THEN '📎 파일' END) AS "replyToText"
             FROM group_messages m
@@ -1131,7 +1132,7 @@ io.on("connection", socket => {
         if (result.rows[0].inserted) void pushToAllExcept(userId, {
             title: "OURCOM 전체 채팅",
             body: pushMessageBody(socket.user.name, text, attachment),
-            url: "/group.html",
+            url: "/chat.html",
             tag: "ourcom-global"
         });
     }));
