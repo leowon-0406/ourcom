@@ -3,6 +3,30 @@
     let registrationPromise = null;
     let installPrompt = null;
 
+    const refreshStyle = document.createElement("style");
+    refreshStyle.textContent = `
+        .ourcom-refresh-button {
+            flex: 0 0 auto;
+            min-height: 38px;
+            margin-left: 8px;
+            padding: 8px 12px;
+            border: 0;
+            border-radius: 10px;
+            background: #4b5563;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .ourcom-refresh-button:hover { background: #6b7280; }
+        .ourcom-refresh-button:disabled { opacity: .6; cursor: wait; }
+        .ourcom-refresh-button.floating { position: fixed; top: 14px; right: 14px; z-index: 1000; }
+        @media (max-width: 650px) {
+            .ourcom-refresh-button { width: 40px; padding: 8px; font-size: 18px; }
+            .ourcom-refresh-label { display: none; }
+        }
+    `;
+    document.head.appendChild(refreshStyle);
+
     function register() {
         if (!("serviceWorker" in navigator)) return Promise.resolve(null);
         if (!registrationPromise) {
@@ -127,6 +151,37 @@
         updateButtons();
     }
 
+    async function refreshApp(button) {
+        if (button) {
+            button.disabled = true;
+            button.querySelector(".ourcom-refresh-label")?.replaceChildren("확인 중");
+        }
+        try {
+            const registration = await navigator.serviceWorker?.getRegistration();
+            await registration?.update();
+        } catch (error) {
+            console.error("앱 업데이트 확인 오류:", error);
+        }
+        location.reload();
+    }
+
+    function addRefreshButton() {
+        if (document.querySelector(".ourcom-refresh-button")) return;
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "ourcom-refresh-button";
+        button.title = "최신 내용으로 새로고침";
+        button.setAttribute("aria-label", "최신 내용으로 새로고침");
+        button.innerHTML = '↻ <span class="ourcom-refresh-label">새로고침</span>';
+        button.onclick = () => refreshApp(button);
+        const header = document.querySelector(".header");
+        if (header) header.appendChild(button);
+        else {
+            button.classList.add("floating");
+            document.body.appendChild(button);
+        }
+    }
+
     window.addEventListener("beforeinstallprompt", event => {
         event.preventDefault();
         installPrompt = event;
@@ -137,10 +192,11 @@
         updateButtons();
     });
     window.addEventListener("DOMContentLoaded", () => {
+        addRefreshButton();
         updateButtons();
         syncExistingPush();
     });
     register();
 
-    window.OurcomPWA = { installApp, enablePush, unsubscribePush, updateButtons };
+    window.OurcomPWA = { installApp, enablePush, unsubscribePush, updateButtons, refreshApp };
 })();
