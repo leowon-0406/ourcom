@@ -525,6 +525,22 @@ app.get("/api/group-messages", requireLogin, asyncHandler(async (req, res) => {
     res.json({ success: true, ...messagePage(result.rows) });
 }));
 
+app.get("/api/group-messages/search", requireLogin, asyncHandler(async (req, res) => {
+    const term = safeText(req.query.q, 100);
+    if (term.length < 1) return res.json({ success: true, messages: [] });
+    const result = await query(`
+        SELECT m.id::int, m.user_name AS "senderName", m.text, m.time,
+               CASE WHEN m.deleted_at IS NULL THEN m.attachment END AS attachment
+        FROM group_messages m
+        WHERE m.deleted_at IS NULL
+          AND (m.text ILIKE $1 OR m.user_name ILIKE $1
+               OR COALESCE(m.attachment->>'fileName', '') ILIKE $1)
+        ORDER BY m.id DESC
+        LIMIT 50
+    `, [`%${term}%`]);
+    res.json({ success: true, messages: result.rows });
+}));
+
 app.post("/api/group-read", requireLogin, asyncHandler(async (req, res) => {
     const ids = Array.isArray(req.body.messageIds)
         ? req.body.messageIds.map(Number).filter(Number.isInteger)
@@ -620,6 +636,28 @@ app.get("/api/private-messages/:userId", requireLogin,
             LIMIT 51
         `, [me, other, before]);
         res.json({ success: true, user: otherUser, ...messagePage(result.rows) });
+    })
+);
+
+app.get("/api/private-messages/:userId/search", requireLogin,
+    asyncHandler(async (req, res) => {
+        const me = req.session.user.id;
+        const other = req.params.userId;
+        const term = safeText(req.query.q, 100);
+        if (term.length < 1) return res.json({ success: true, messages: [] });
+        const result = await query(`
+            SELECT m.id::int, m.from_name AS "senderName", m.text, m.time,
+                   CASE WHEN m.deleted_at IS NULL THEN m.attachment END AS attachment
+            FROM private_messages m
+            WHERE ((m.from_id = $1 AND m.to_id = $2)
+               OR (m.from_id = $2 AND m.to_id = $1))
+              AND m.deleted_at IS NULL
+              AND (m.text ILIKE $3 OR m.from_name ILIKE $3
+                   OR COALESCE(m.attachment->>'fileName', '') ILIKE $3)
+            ORDER BY m.id DESC
+            LIMIT 50
+        `, [me, other, `%${term}%`]);
+        res.json({ success: true, messages: result.rows });
     })
 );
 
@@ -864,6 +902,74 @@ app.get("/api/chat-rooms/:roomId", requireLogin,
     })
 );
 
+app.patch("/api/chat-rooms/:roomId", requireLogin, asyncHandler(async (req, res) => {
+    const roomId = Number(req.params.roomId);
+    const name = safeText(req.body.name, 50);
+    if (!Number.isInteger(roomId) || !name) {
+        return res.status(400).json({ success: false, message: "채팅방 이름을 입력해주세요." });
+    }
+    const result = await query(`
+        UPDATE group_rooms SET name = $1
+        WHERE id = $2 AND creator_id = $3
+        RETURNING id::int, name
+    `, [name, roomId, req.session.user.id]);
+    if (!result.rowCount) return res.status(403).json({ success: false, message: "방장만 이름을 변경할 수 있습니다." });
+    io.to(`chatroom:${roomId}`).emit("chat room updated", { roomId });
+    res.json({ success: true, room: result.rows[0] });
+}));
+
+app.post("/api/chat-rooms/:roomId/members", requireLogin, asyncHandler(async (req, res) => {
+    const roomId = Number(req.params.roomId);
+    const memberId = safeText(req.body.userId, 80);
+    const owner = await query("SELECT 1 FROM group_rooms WHERE id = $1 AND creator_id = $2", [roomId, req.session.user.id]);
+    if (!owner.rowCount) return res.status(403).json({ success: false, message: "방장만 친구를 초대할 수 있습니다." });
+    const user = await query("SELECT id, name FROM users WHERE id = $1", [memberId]);
+    if (!user.rowCount) return res.status(404).json({ success: false, message: "사용자를 찾을 수 없습니다." });
+    const added = await query(`
+        INSERT INTO group_room_members (room_id, user_id, user_name)
+        VALUES ($1, $2, $3)
+        ON CONFLICT DO NOTHING
+        RETURNING user_id
+    `, [roomId, user.rows[0].id, user.rows[0].name]);
+    if (!added.rowCount) return res.status(409).json({ success: false, message: "이미 참여 중인 친구입니다." });
+    io.to(`chatroom:${roomId}`).emit("chat room updated", { roomId });
+    io.to(`private:${memberId}`).emit("chat room invitation", { roomId });
+    res.json({ success: true });
+}));
+
+app.delete("/api/chat-rooms/:roomId/members/:userId", requireLogin, asyncHandler(async (req, res) => {
+    const roomId = Number(req.params.roomId);
+    const memberId = req.params.userId;
+    const owner = await query("SELECT creator_id FROM group_rooms WHERE id = $1 AND creator_id = $2", [roomId, req.session.user.id]);
+    if (!owner.rowCount) return res.status(403).json({ success: false, message: "방장만 멤버를 내보낼 수 있습니다." });
+    if (memberId === req.session.user.id) return res.status(400).json({ success: false, message: "방장은 권한을 넘긴 후 나갈 수 있습니다." });
+    const removed = await query(
+        "DELETE FROM group_room_members WHERE room_id = $1 AND user_id = $2 RETURNING user_id",
+        [roomId, memberId]
+    );
+    if (!removed.rowCount) return res.status(404).json({ success: false, message: "멤버를 찾을 수 없습니다." });
+    io.in(`private:${memberId}`).socketsLeave(`chatroom:${roomId}`);
+    io.to(`private:${memberId}`).emit("chat room removed", { roomId });
+    io.to(`chatroom:${roomId}`).emit("chat room updated", { roomId });
+    res.json({ success: true });
+}));
+
+app.patch("/api/chat-rooms/:roomId/owner", requireLogin, asyncHandler(async (req, res) => {
+    const roomId = Number(req.params.roomId);
+    const newOwnerId = safeText(req.body.userId, 80);
+    const result = await query(`
+        UPDATE group_rooms rooms
+        SET creator_id = members.user_id, creator_name = members.user_name
+        FROM group_room_members members
+        WHERE rooms.id = $1 AND rooms.creator_id = $2
+          AND members.room_id = rooms.id AND members.user_id = $3
+        RETURNING rooms.id::int, rooms.creator_id AS "creatorId", rooms.creator_name AS "creatorName"
+    `, [roomId, req.session.user.id, newOwnerId]);
+    if (!result.rowCount) return res.status(400).json({ success: false, message: "방장 권한을 넘길 멤버를 찾을 수 없습니다." });
+    io.to(`chatroom:${roomId}`).emit("chat room updated", { roomId });
+    res.json({ success: true, room: result.rows[0] });
+}));
+
 app.get("/api/chat-rooms/:roomId/messages", requireLogin,
     asyncHandler(async (req, res) => {
         const roomId = Number(req.params.roomId);
@@ -893,6 +999,30 @@ app.get("/api/chat-rooms/:roomId/messages", requireLogin,
             LIMIT 51
         `, [roomId, before]);
         res.json({ success: true, ...messagePage(result.rows) });
+    })
+);
+
+app.get("/api/chat-rooms/:roomId/messages/search", requireLogin,
+    asyncHandler(async (req, res) => {
+        const roomId = Number(req.params.roomId);
+        const term = safeText(req.query.q, 100);
+        const member = await query(
+            "SELECT 1 FROM group_room_members WHERE room_id = $1 AND user_id = $2",
+            [roomId, req.session.user.id]
+        );
+        if (!member.rowCount) return res.status(403).json({ success: false, message: "채팅방 멤버가 아닙니다." });
+        if (term.length < 1) return res.json({ success: true, messages: [] });
+        const result = await query(`
+            SELECT m.id::int, m.user_name AS "senderName", m.text, m.time,
+                   CASE WHEN m.deleted_at IS NULL THEN m.attachment END AS attachment
+            FROM group_room_messages m
+            WHERE m.room_id = $1 AND m.deleted_at IS NULL
+              AND (m.text ILIKE $2 OR m.user_name ILIKE $2
+                   OR COALESCE(m.attachment->>'fileName', '') ILIKE $2)
+            ORDER BY m.id DESC
+            LIMIT 50
+        `, [roomId, `%${term}%`]);
+        res.json({ success: true, messages: result.rows });
     })
 );
 
@@ -939,7 +1069,8 @@ app.get("/api/chat-rooms/:roomId/unread-counts", requireLogin,
         const result = await query(`
             SELECT m.id::int,
                    GREATEST(
-                       (SELECT COUNT(*) FROM group_room_members WHERE room_id = $1)
+                       (SELECT COUNT(*) FROM group_room_members
+                        WHERE room_id = $1 AND joined_at <= m.created_at)
                        - 1 - COUNT(r.user_id),
                        0
                    )::int AS count
@@ -971,6 +1102,7 @@ app.get("/api/chat-rooms/:roomId/message/:messageId/unread-users", requireLogin,
             JOIN group_room_messages m ON m.id = $2 AND m.room_id = $1
             WHERE members.room_id = $1
               AND members.user_id <> m.user_id
+              AND members.joined_at <= m.created_at
               AND NOT EXISTS (
                   SELECT 1 FROM group_room_reads reads
                   WHERE reads.message_id = m.id
@@ -1006,6 +1138,7 @@ app.get("/api/unread-summary", requireLogin, asyncHandler(async (req, res) => {
              JOIN group_room_members member
                ON member.room_id = m.room_id AND member.user_id = $1
              WHERE m.user_id <> $1
+               AND m.created_at >= member.joined_at
                AND NOT EXISTS (
                    SELECT 1 FROM group_room_reads r
                    WHERE r.message_id = m.id AND r.user_id = $1
@@ -1022,6 +1155,15 @@ app.get("/api/unread-summary", requireLogin, asyncHandler(async (req, res) => {
 app.delete("/api/chat-rooms/:roomId/leave", requireLogin,
     asyncHandler(async (req, res) => {
         const roomId = Number(req.params.roomId);
+        const room = await query(`
+            SELECT creator_id AS "creatorId",
+                   (SELECT COUNT(*)::int FROM group_room_members WHERE room_id = $1) AS "memberCount"
+            FROM group_rooms WHERE id = $1
+        `, [roomId]);
+        if (!room.rowCount) return res.status(404).json({ success: false, message: "채팅방을 찾을 수 없습니다." });
+        if (room.rows[0].creatorId === req.session.user.id && room.rows[0].memberCount > 1) {
+            return res.status(400).json({ success: false, message: "다른 멤버에게 방장 권한을 넘긴 후 나가주세요." });
+        }
         const result = await query(
             "DELETE FROM group_room_members WHERE room_id = $1 AND user_id = $2",
             [roomId, req.session.user.id]
@@ -1039,6 +1181,8 @@ app.delete("/api/chat-rooms/:roomId/leave", requireLogin,
                   SELECT 1 FROM group_room_members m WHERE m.room_id = r.id
               )
         `, [roomId]);
+        io.in(`private:${req.session.user.id}`).socketsLeave(`chatroom:${roomId}`);
+        io.to(`chatroom:${roomId}`).emit("chat room updated", { roomId });
         res.json({ success: true });
     })
 );
@@ -1089,7 +1233,20 @@ io.on("connection", socket => {
             ORDER BY m.id DESC
             LIMIT 51
         `);
-        socket.emit("group history", messagePage(result.rows));
+        const unread = await query(`
+            SELECT MIN(m.id)::int AS "firstUnreadId"
+            FROM group_messages m
+            JOIN users u ON u.id = $1
+            WHERE m.user_id <> $1 AND m.created_at >= u.created_at
+              AND NOT EXISTS (
+                  SELECT 1 FROM group_reads r
+                  WHERE r.message_id = m.id AND r.user_id = $1
+              )
+        `, [userId]);
+        socket.emit("group history", {
+            ...messagePage(result.rows),
+            firstUnreadId: unread.rows[0].firstUnreadId
+        });
     }));
 
     socket.on("group message", guard(async value => {
@@ -1175,8 +1332,18 @@ io.on("connection", socket => {
             LIMIT 51
         `, [userId, otherId]);
         const page = messagePage(result.rows);
+        const unread = await query(`
+            SELECT MIN(m.id)::int AS "firstUnreadId"
+            FROM private_messages m
+            WHERE m.from_id = $2 AND m.to_id = $1
+              AND NOT EXISTS (
+                  SELECT 1 FROM private_reads r
+                  WHERE r.message_id = m.id AND r.user_id = $1
+              )
+        `, [userId, otherId]);
         socket.emit("private history", {
             user: otherResult.rows[0],
+            firstUnreadId: unread.rows[0].firstUnreadId,
             ...page
         });
     }));
@@ -1259,7 +1426,23 @@ io.on("connection", socket => {
             ORDER BY m.id DESC
             LIMIT 51
         `, [roomId]);
-        socket.emit("chat room history", { roomId, ...messagePage(result.rows) });
+        const unread = await query(`
+            SELECT MIN(m.id)::int AS "firstUnreadId"
+            FROM group_room_messages m
+            JOIN group_room_members member
+              ON member.room_id = m.room_id AND member.user_id = $2
+            WHERE m.room_id = $1 AND m.user_id <> $2
+              AND m.created_at >= member.joined_at
+              AND NOT EXISTS (
+                  SELECT 1 FROM group_room_reads r
+                  WHERE r.message_id = m.id AND r.user_id = $2
+              )
+        `, [roomId, userId]);
+        socket.emit("chat room history", {
+            roomId,
+            ...messagePage(result.rows),
+            firstUnreadId: unread.rows[0].firstUnreadId
+        });
     }));
 
     socket.on("chat room message", guard(async data => {

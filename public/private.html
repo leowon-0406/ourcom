@@ -351,6 +351,7 @@
 
 <script src="/socket.io/socket.io.js"></script>
 <script src="/chat-attachments.js"></script>
+<script src="/chat-tools.js"></script>
 
 
 <script>
@@ -477,6 +478,12 @@ if (!friendId) {
         "/friends.html";
 
 }
+
+OurcomChatTools.init({
+    endpoint: `/api/private-messages/${encodeURIComponent(friendId)}/search`,
+    ensureMessageVisible,
+    scrollToMessage
+});
 
 
 /* =========================================
@@ -788,6 +795,18 @@ async function loadOlderMessages() {
     }
 }
 
+async function ensureMessageVisible(messageId) {
+    const selector = `[data-message-id="${Number(messageId)}"]`;
+    let previousFirst = null;
+    for (let attempt = 0; attempt < 100 && !document.querySelector(selector) && hasMoreMessages; attempt += 1) {
+        const first = visibleMessageIds().sort((a, b) => a - b)[0];
+        if (!first || first === previousFirst) break;
+        previousFirst = first;
+        await loadOlderMessages();
+    }
+    return Boolean(document.querySelector(selector));
+}
+
 async function updateMessageReadCounts() {
     const ids = visibleMessageIds();
     if (!ids.length) return;
@@ -1036,6 +1055,10 @@ async function startChat() {
             markMessagesRead(
                 messages
             );
+
+            if (data.firstUnreadId) {
+                OurcomChatTools.showUnreadMarker(data.firstUnreadId);
+            }
 
         }
     );

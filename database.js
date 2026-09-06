@@ -83,6 +83,7 @@ async function initializeDatabase() {
             room_id BIGINT NOT NULL REFERENCES group_rooms(id) ON DELETE CASCADE,
             user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             user_name TEXT NOT NULL,
+            joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             PRIMARY KEY (room_id, user_id)
         );
 
@@ -156,6 +157,16 @@ async function initializeDatabase() {
             ADD COLUMN IF NOT EXISTS attachment JSONB;
         ALTER TABLE group_room_messages
             ADD COLUMN IF NOT EXISTS attachment JSONB;
+        ALTER TABLE group_room_members
+            ADD COLUMN IF NOT EXISTS joined_at TIMESTAMPTZ;
+        UPDATE group_room_members members
+        SET joined_at = rooms.created_at
+        FROM group_rooms rooms
+        WHERE members.room_id = rooms.id AND members.joined_at IS NULL;
+        ALTER TABLE group_room_members
+            ALTER COLUMN joined_at SET DEFAULT NOW();
+        ALTER TABLE group_room_members
+            ALTER COLUMN joined_at SET NOT NULL;
 
         CREATE INDEX IF NOT EXISTS group_messages_reply_idx
             ON group_messages (reply_to_id);

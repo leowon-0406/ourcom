@@ -423,6 +423,7 @@ body {
 
 <script src="/socket.io/socket.io.js"></script>
 <script src="/chat-attachments.js"></script>
+<script src="/chat-tools.js"></script>
 
 
 <script>
@@ -438,6 +439,11 @@ let hasMoreMessages = true;
 let loadingOlder = false;
 const pendingMessages = new Map();
 OurcomFiles.init();
+OurcomChatTools.init({
+    endpoint: "/api/group-messages/search",
+    ensureMessageVisible,
+    scrollToMessage
+});
 
 function scheduleReadCountUpdate() {
     clearTimeout(readCountTimer);
@@ -798,6 +804,18 @@ async function loadOlderMessages() {
     }
 }
 
+async function ensureMessageVisible(messageId) {
+    const selector = `[data-message-id="${Number(messageId)}"]`;
+    let previousFirst = null;
+    for (let attempt = 0; attempt < 100 && !document.querySelector(selector) && hasMoreMessages; attempt += 1) {
+        const first = visibleMessageIds().sort((a, b) => a - b)[0];
+        if (!first || first === previousFirst) break;
+        previousFirst = first;
+        await loadOlderMessages();
+    }
+    return Boolean(document.querySelector(selector));
+}
+
 
 /* =====================================
    읽음 숫자 갱신
@@ -1045,6 +1063,9 @@ async function startChat() {
                 addMessage
             );
 
+            if (history && history.firstUnreadId) {
+                OurcomChatTools.showUnreadMarker(history.firstUnreadId);
+            }
             markMessagesRead(messages);
 
         }

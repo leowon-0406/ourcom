@@ -86,7 +86,7 @@ body {
 .container {
     max-width: 900px;
 
-    margin: 35px auto;
+    margin: 24px auto;
 
     padding: 0 20px;
 }
@@ -96,7 +96,7 @@ body {
 ========================= */
 
 .welcome {
-    margin-bottom: 25px;
+    margin-bottom: 18px;
 }
 
 .welcome h1 {
@@ -129,9 +129,9 @@ body {
 
     border-radius: 18px;
 
-    padding: 25px;
+    padding: 20px;
 
-    min-height: 150px;
+    min-height: 112px;
 
     cursor: pointer;
 
@@ -150,12 +150,6 @@ body {
     box-shadow:
         0 10px 25px
         rgba(0,0,0,0.08);
-}
-
-.menu-icon {
-    font-size: 35px;
-
-    margin-bottom: 15px;
 }
 
 .menu-title {
@@ -201,10 +195,6 @@ body {
 
 .admin {
     border: 2px solid #e5e7eb;
-}
-
-.admin .menu-icon {
-    font-size: 30px;
 }
 
 /* =========================
@@ -274,21 +264,48 @@ body {
 
 @media (max-width: 650px) {
 
+    body { min-height: 100dvh; }
+
     .menu-grid {
-        grid-template-columns: 1fr;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 9px;
     }
 
     .header {
-        padding: 0 15px;
+        height: 56px;
+        padding: 0 12px;
+        font-size: 18px;
     }
 
     .header-sub {
         display: none;
     }
 
+    .logout { padding: 7px 10px; font-size: 12px; }
+
+    .container { margin: 13px auto; padding: 0 10px 12px; }
+
+    .welcome { margin-bottom: 10px; }
+
     .welcome h1 {
-        font-size: 24px;
+        font-size: 20px;
     }
+
+    .welcome p { margin: 4px 0 0; font-size: 12px; }
+
+    .menu { min-height: 76px; padding: 13px 12px; border-radius: 12px; box-shadow: 0 2px 9px rgba(0,0,0,.05); }
+    .menu:hover { transform: none; }
+    .menu-title { padding-right: 12px; font-size: 15px; }
+    .menu-description { margin-top: 5px; font-size: 11px; line-height: 1.25; }
+    .notification-dot { top: 10px; right: 10px; width: 10px; height: 10px; }
+
+    .user-box { margin-top: 10px; padding: 12px; border-radius: 12px; }
+    .user-title { margin-bottom: 4px; font-size: 13px; }
+    .user-info { font-size: 11px; }
+    .app-settings { margin-top: 9px; padding-top: 8px; }
+    .app-buttons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin-top: 7px; }
+    .app-button { min-height: 34px; padding: 7px 8px; border-radius: 8px; font-size: 11px; }
+    .push-status { margin-top: 5px; font-size: 10px; }
 
 }
 
@@ -358,10 +375,6 @@ body {
 
             <span id="globalUnreadDot" class="notification-dot"></span>
 
-            <div class="menu-icon">
-                💬
-            </div>
-
             <div class="menu-title">
                 전체 채팅
             </div>
@@ -383,10 +396,6 @@ body {
 
             <span id="privateUnreadDot" class="notification-dot"></span>
 
-            <div class="menu-icon">
-                👤
-            </div>
-
             <div class="menu-title">
                 1:1 채팅
             </div>
@@ -405,10 +414,6 @@ body {
             class="menu"
             onclick="openFriends()"
         >
-
-            <div class="menu-icon">
-                👥
-            </div>
 
             <div class="menu-title">
                 친구
@@ -431,12 +436,8 @@ body {
 
             <span id="roomUnreadDot" class="notification-dot"></span>
 
-            <div class="menu-icon">
-                🗨️
-            </div>
-
             <div class="menu-title">
-                단체 채팅 만들기
+                단체 채팅
             </div>
 
             <div class="menu-description">
@@ -455,10 +456,6 @@ body {
             style="display:none"
             onclick="openAdmin()"
         >
-
-            <div class="menu-icon">
-                ⚙️
-            </div>
 
             <div class="menu-title">
                 관리자
@@ -496,10 +493,10 @@ body {
             <div class="user-title">OURCOM 앱 설정</div>
             <div class="app-buttons">
                 <button id="installAppButton" class="app-button" type="button" onclick="OurcomPWA.installApp()">
-                    📲 앱 설치
+                    앱 설치
                 </button>
                 <button id="enablePushButton" class="app-button secondary" type="button" onclick="enablePushNotifications()">
-                    🔕 푸시 알림 켜기
+                    푸시 알림 켜기
                 </button>
             </div>
             <div id="pushStatus" class="push-status">알림 상태를 확인하는 중...</div>

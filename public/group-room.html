@@ -186,6 +186,39 @@ body {
 .modal-user { padding: 8px 0; border-bottom: 1px solid #eee; }
 .modal-close { width: 100%; margin-top: 16px; padding: 10px; border: 0; border-radius: 10px; cursor: pointer; }
 
+.room-manage-box { width: min(520px, 100%); max-height: min(720px, 90vh); overflow-y: auto; }
+.manage-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.manage-header h3 { margin: 0; }
+.manage-x { border: 0; background: transparent; color: #6b7280; font-size: 24px; cursor: pointer; }
+.manage-section { margin-top: 20px; }
+.manage-label { margin-bottom: 8px; color: #374151; font-size: 13px; font-weight: bold; }
+.manage-form { display: flex; gap: 8px; }
+.manage-form input, .manage-form select { min-width: 0; flex: 1; padding: 10px; border: 1px solid #d1d5db; border-radius: 9px; background: white; }
+.manage-form button, .member-action { border: 0; border-radius: 9px; padding: 9px 11px; background: #111827; color: white; cursor: pointer; }
+.member-list { border-top: 1px solid #e5e7eb; }
+.member-row { display: flex; align-items: center; gap: 8px; padding: 12px 0; border-bottom: 1px solid #e5e7eb; }
+.member-identity { min-width: 0; flex: 1; }
+.member-name { font-weight: bold; }
+.member-id { margin-top: 2px; color: #6b7280; font-size: 12px; }
+.owner-badge { display: inline-block; margin-left: 6px; padding: 2px 6px; border-radius: 999px; background: #e0e7ff; color: #3730a3; font-size: 10px; }
+.member-actions { display: flex; gap: 5px; }
+.member-action { padding: 7px 9px; font-size: 11px; }
+.member-action.danger { background: #dc2626; }
+.manage-note { color: #6b7280; font-size: 12px; }
+
+@media (max-width: 650px) {
+    .header { height: 58px; padding: 0 10px; }
+    .chat { height: calc(100vh - 58px); }
+    .title { max-width: 145px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; }
+    .header-button { padding: 7px 9px; font-size: 12px; }
+    .messages { padding: 13px 10px; }
+    .input-area { padding: 9px; }
+    .manage-form { flex-wrap: wrap; }
+    .manage-form button { width: 100%; }
+    .member-row { align-items: flex-start; }
+    .member-actions { flex-direction: column; }
+}
+
 .reply-reference {
     display: block; width: 100%; margin-bottom: 7px; padding: 7px 9px;
     border: none; border-left: 3px solid #818cf8; border-radius: 6px;
@@ -291,7 +324,7 @@ body {
             class="header-button"
             onclick="showMembers()"
         >
-            👥
+            관리
         </button>
 
         <button
@@ -350,9 +383,24 @@ body {
     </div>
 </div>
 
+<div id="roomManageModal" class="modal" onclick="closeRoomManager(event)">
+    <div class="modal-box room-manage-box">
+        <div class="manage-header">
+            <h3>단체방 관리</h3>
+            <button class="manage-x" type="button" onclick="closeRoomManager()" aria-label="닫기">×</button>
+        </div>
+        <div id="ownerRoomControls"></div>
+        <div class="manage-section">
+            <div class="manage-label">참여 멤버</div>
+            <div id="roomMemberList" class="member-list"></div>
+        </div>
+    </div>
+</div>
+
 
 <script src="/socket.io/socket.io.js"></script>
 <script src="/chat-attachments.js"></script>
+<script src="/chat-tools.js"></script>
 
 
 <script>
@@ -364,6 +412,8 @@ let currentUser = null;
 let roomId = null;
 
 let roomMembers = [];
+
+let currentRoom = null;
 
 let replyingTo = null;
 
@@ -480,6 +530,12 @@ if (!roomId) {
 
 }
 
+OurcomChatTools.init({
+    endpoint: `/api/chat-rooms/${roomId}/messages/search`,
+    ensureMessageVisible,
+    scrollToMessage
+});
+
 
 /* =================================
    로그인
@@ -546,6 +602,8 @@ async function loadRoom() {
         "roomName"
     ).textContent =
         data.room.name;
+
+    currentRoom = data.room;
 
 
     roomMembers =
@@ -798,6 +856,18 @@ async function loadOlderMessages() {
     }
 }
 
+async function ensureMessageVisible(messageId) {
+    const selector = `[data-message-id="${Number(messageId)}"]`;
+    let previousFirst = null;
+    for (let attempt = 0; attempt < 100 && !document.querySelector(selector) && hasMoreMessages; attempt += 1) {
+        const first = visibleMessageIds().sort((a, b) => a - b)[0];
+        if (!first || first === previousFirst) break;
+        previousFirst = first;
+        await loadOlderMessages();
+    }
+    return Boolean(document.querySelector(selector));
+}
+
 async function updateRoomReadCounts() {
     const ids = visibleMessageIds();
     if (!ids.length) return;
@@ -839,7 +909,7 @@ async function showUnreadUsers(messageId) {
         data.users.forEach(user => {
             const row = document.createElement("div");
             row.className = "modal-user";
-            row.textContent = `🔴 ${user.name} (@${user.id})`;
+            row.textContent = `${user.name} (@${user.id})`;
             container.appendChild(row);
         });
     }
@@ -926,6 +996,9 @@ async function startChat() {
                 addMessage
             );
 
+            if (data.firstUnreadId) {
+                OurcomChatTools.showUnreadMarker(data.firstUnreadId);
+            }
             markRoomMessagesRead(data.messages);
 
         }
@@ -970,6 +1043,20 @@ async function startChat() {
     );
 
     socket.on("chat room message updated", applyMessageUpdate);
+
+    socket.on("chat room updated", async data => {
+        if (Number(data.roomId) !== Number(roomId)) return;
+        if (!await loadRoom()) return;
+        if (document.getElementById("roomManageModal").style.display === "flex") {
+            await renderRoomManager();
+        }
+    });
+
+    socket.on("chat room removed", data => {
+        if (Number(data.roomId) !== Number(roomId)) return;
+        alert("이 단체방에서 내보내졌습니다.");
+        location.href = "/group-create.html";
+    });
 
 
     socket.on(
@@ -1095,31 +1182,176 @@ async function sendMessage() {
 
 
 /* =================================
-   멤버 보기
+   단체방 관리
 ================================= */
 
-function showMembers() {
+async function showMembers() {
+    if (!currentRoom || roomMembers.length === 0) return;
+    document.getElementById("roomManageModal").style.display = "flex";
+    await renderRoomManager();
+}
 
-    if (
-        roomMembers.length === 0
-    ) {
-        return;
+function closeRoomManager(event) {
+    if (event && event.target !== event.currentTarget) return;
+    document.getElementById("roomManageModal").style.display = "none";
+}
+
+async function roomRequest(url, method, body) {
+    const response = await fetch(url, {
+        method,
+        headers: body ? { "Content-Type": "application/json" } : undefined,
+        body: body ? JSON.stringify(body) : undefined
+    });
+    const data = await response.json();
+    if (!response.ok || !data.success) {
+        throw new Error(data.message || "요청을 처리하지 못했습니다.");
+    }
+    return data;
+}
+
+async function renderRoomManager() {
+    const controls = document.getElementById("ownerRoomControls");
+    const list = document.getElementById("roomMemberList");
+    controls.innerHTML = "";
+    list.innerHTML = "";
+
+    const isOwner = currentRoom.creatorId === currentUser.id;
+
+    if (isOwner) {
+        const renameSection = document.createElement("div");
+        renameSection.className = "manage-section";
+        renameSection.innerHTML = `
+            <div class="manage-label">방 이름 변경</div>
+            <div class="manage-form">
+                <input id="roomRenameInput" maxlength="50" aria-label="새 방 이름">
+                <button type="button" onclick="renameRoom()">변경</button>
+            </div>
+        `;
+        renameSection.querySelector("input").value = currentRoom.name;
+        controls.appendChild(renameSection);
+
+        const inviteSection = document.createElement("div");
+        inviteSection.className = "manage-section";
+        inviteSection.innerHTML = `
+            <div class="manage-label">멤버 초대</div>
+            <div class="manage-form">
+                <select id="roomInviteSelect" aria-label="초대할 사용자"></select>
+                <button id="roomInviteButton" type="button" onclick="inviteRoomMember()">초대</button>
+            </div>
+        `;
+        controls.appendChild(inviteSection);
+
+        try {
+            const response = await fetch("/api/users");
+            const data = await response.json();
+            const select = inviteSection.querySelector("select");
+            const button = inviteSection.querySelector("button");
+            const memberIds = new Set(roomMembers.map(member => member.id));
+            const candidates = data.success ? data.users.filter(user => !memberIds.has(user.id)) : [];
+            if (candidates.length === 0) {
+                const option = document.createElement("option");
+                option.textContent = "초대할 사용자가 없습니다";
+                option.value = "";
+                select.appendChild(option);
+                select.disabled = true;
+                button.disabled = true;
+            } else {
+                candidates.forEach(user => {
+                    const option = document.createElement("option");
+                    option.value = user.id;
+                    option.textContent = `${user.name} (@${user.id})`;
+                    select.appendChild(option);
+                });
+            }
+        } catch (error) {
+            inviteSection.querySelector("select").innerHTML = "<option>사용자 목록을 불러오지 못했습니다</option>";
+            inviteSection.querySelector("button").disabled = true;
+        }
+    } else {
+        const note = document.createElement("p");
+        note.className = "manage-note";
+        note.textContent = `방장: ${currentRoom.creatorName} (@${currentRoom.creatorId})`;
+        controls.appendChild(note);
     }
 
+    roomMembers.forEach(member => {
+        const row = document.createElement("div");
+        row.className = "member-row";
 
-    const names =
-        roomMembers
-            .map(
-                member =>
-                    `• ${member.name} (@${member.id})`
-            )
-            .join("\n");
+        const identity = document.createElement("div");
+        identity.className = "member-identity";
+        const name = document.createElement("div");
+        name.className = "member-name";
+        name.textContent = member.name;
+        if (member.id === currentRoom.creatorId) {
+            const badge = document.createElement("span");
+            badge.className = "owner-badge";
+            badge.textContent = "방장";
+            name.appendChild(badge);
+        }
+        const id = document.createElement("div");
+        id.className = "member-id";
+        id.textContent = `@${member.id}`;
+        identity.append(name, id);
+        row.appendChild(identity);
 
+        if (isOwner && member.id !== currentUser.id) {
+            const actions = document.createElement("div");
+            actions.className = "member-actions";
+            const transfer = document.createElement("button");
+            transfer.className = "member-action";
+            transfer.type = "button";
+            transfer.textContent = "방장 넘기기";
+            transfer.onclick = () => transferRoomOwner(member.id, member.name);
+            const remove = document.createElement("button");
+            remove.className = "member-action danger";
+            remove.type = "button";
+            remove.textContent = "내보내기";
+            remove.onclick = () => removeRoomMember(member.id, member.name);
+            actions.append(transfer, remove);
+            row.appendChild(actions);
+        }
+        list.appendChild(row);
+    });
+}
 
-    alert(
-        `채팅방 멤버\n\n${names}`
-    );
+async function refreshRoomManager() {
+    if (!await loadRoom()) return;
+    await renderRoomManager();
+}
 
+async function renameRoom() {
+    const name = document.getElementById("roomRenameInput").value.trim();
+    if (!name || name === currentRoom.name) return;
+    try {
+        await roomRequest(`/api/chat-rooms/${roomId}`, "PATCH", { name });
+        await refreshRoomManager();
+    } catch (error) { alert(error.message); }
+}
+
+async function inviteRoomMember() {
+    const userId = document.getElementById("roomInviteSelect").value;
+    if (!userId) return;
+    try {
+        await roomRequest(`/api/chat-rooms/${roomId}/members`, "POST", { userId });
+        await refreshRoomManager();
+    } catch (error) { alert(error.message); }
+}
+
+async function removeRoomMember(userId, name) {
+    if (!confirm(`${name}님을 이 단체방에서 내보낼까요?`)) return;
+    try {
+        await roomRequest(`/api/chat-rooms/${roomId}/members/${encodeURIComponent(userId)}`, "DELETE");
+        await refreshRoomManager();
+    } catch (error) { alert(error.message); }
+}
+
+async function transferRoomOwner(userId, name) {
+    if (!confirm(`${name}님에게 방장 권한을 넘길까요?`)) return;
+    try {
+        await roomRequest(`/api/chat-rooms/${roomId}/owner`, "PATCH", { userId });
+        await refreshRoomManager();
+    } catch (error) { alert(error.message); }
 }
 
 

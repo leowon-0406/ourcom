@@ -21,8 +21,7 @@
         .ourcom-refresh-button:disabled { opacity: .6; cursor: wait; }
         .ourcom-refresh-button.floating { position: fixed; top: 14px; right: 14px; z-index: 1000; }
         @media (max-width: 650px) {
-            .ourcom-refresh-button { width: 40px; padding: 8px; font-size: 18px; }
-            .ourcom-refresh-label { display: none; }
+            .ourcom-refresh-button { min-height: 34px; margin-left: 5px; padding: 7px 8px; font-size: 11px; }
         }
     `;
     document.head.appendChild(refreshStyle);
@@ -52,7 +51,7 @@
             const installed = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
             installButton.style.display = installed ? "none" : "inline-flex";
             installButton.disabled = false;
-            installButton.textContent = installPrompt ? "📲 앱 설치" : "브라우저 메뉴에서 앱 설치";
+            installButton.textContent = installPrompt ? "앱 설치" : "브라우저 메뉴에서 앱 설치";
         }
         updatePushButton();
     }
@@ -70,7 +69,7 @@
         const registration = await register();
         const subscription = await registration?.pushManager.getSubscription();
         button.disabled = false;
-        button.textContent = subscription ? "🔔 알림 사용 중" : "🔕 푸시 알림 켜기";
+        button.textContent = subscription ? "알림 사용 중" : "푸시 알림 켜기";
         if (status) status.textContent = subscription
             ? "앱을 닫아도 새 메시지 알림을 받을 수 있습니다."
             : "버튼을 눌러 새 메시지 알림을 허용하세요.";
@@ -172,7 +171,7 @@
         button.className = "ourcom-refresh-button";
         button.title = "최신 내용으로 새로고침";
         button.setAttribute("aria-label", "최신 내용으로 새로고침");
-        button.innerHTML = '↻ <span class="ourcom-refresh-label">새로고침</span>';
+        button.innerHTML = '<span class="ourcom-refresh-label">새로고침</span>';
         button.onclick = () => refreshApp(button);
         const header = document.querySelector(".header");
         if (header) header.appendChild(button);
