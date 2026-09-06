@@ -422,9 +422,30 @@ app.delete("/api/push/subscribe", requireLogin, asyncHandler(async (req, res) =>
 }));
 
 app.get("/api/users", requireLogin, asyncHandler(async (req, res) => {
-    const users = (await getUsers()).filter(
-        user => user.id !== req.session.user.id
-    );
+    let users;
+    if (req.query.sort === "recent") {
+        const result = await query(`
+            SELECT u.id, u.name, u.role,
+                   recent.last_message_id::int AS "lastMessageId",
+                   recent.last_message_at AS "lastMessageAt"
+            FROM users u
+            LEFT JOIN (
+                SELECT CASE WHEN from_id = $1 THEN to_id ELSE from_id END AS friend_id,
+                       MAX(id) AS last_message_id,
+                       MAX(created_at) AS last_message_at
+                FROM private_messages
+                WHERE from_id = $1 OR to_id = $1
+                GROUP BY CASE WHEN from_id = $1 THEN to_id ELSE from_id END
+            ) recent ON recent.friend_id = u.id
+            WHERE u.id <> $1
+            ORDER BY recent.last_message_id DESC NULLS LAST, u.name ASC
+        `, [req.session.user.id]);
+        users = result.rows;
+    } else {
+        users = (await getUsers()).filter(
+            user => user.id !== req.session.user.id
+        );
+    }
     res.json({ success: true, users });
 }));
 

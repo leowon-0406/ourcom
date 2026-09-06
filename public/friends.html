@@ -251,7 +251,7 @@ async function loadFriends() {
 
         const [usersResponse, unreadResponse] =
             await Promise.all([
-                fetch("/api/users"),
+                fetch("/api/users?sort=recent"),
                 fetch("/api/private-unread-counts")
             ]);
 
@@ -424,7 +424,7 @@ function connectNotifications() {
 
     socket.on(
         "private message",
-        updateUnreadDots
+        () => loadFriends()
     );
 
     socket.on(
