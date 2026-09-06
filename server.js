@@ -259,7 +259,9 @@ app.get("/api/group-messages", requireLogin, asyncHandler(async (req, res) => {
     const before = beforeId(req.query.before);
     const result = await query(`
         SELECT m.id::int, m.user_id AS "userId", m.user_name AS name,
-               m.text, m.time, m.reply_to_id::int AS "replyToId",
+               m.text, m.time, (m.edited_at IS NOT NULL) AS edited,
+               (m.deleted_at IS NOT NULL) AS deleted,
+               m.reply_to_id::int AS "replyToId",
                reply.user_name AS "replyToName", reply.text AS "replyToText"
         FROM group_messages m
         LEFT JOIN group_messages reply ON reply.id = m.reply_to_id
@@ -350,6 +352,8 @@ app.get("/api/private-messages/:userId", requireLogin,
         const result = await query(`
             SELECT m.id::int, m.from_id AS "fromId", m.from_name AS "fromName",
                    m.to_id AS "toId", m.text, m.time,
+                   (m.edited_at IS NOT NULL) AS edited,
+                   (m.deleted_at IS NOT NULL) AS deleted,
                    m.reply_to_id::int AS "replyToId",
                    reply.from_name AS "replyToName", reply.text AS "replyToText"
             FROM private_messages m
@@ -620,7 +624,8 @@ app.get("/api/chat-rooms/:roomId/messages", requireLogin,
         }
         const result = await query(`
             SELECT m.id::int, m.user_id AS "userId", m.user_name AS "userName",
-                   m.text, m.time, m.reply_to_id::int AS "replyToId",
+                   m.text, m.time, (m.edited_at IS NOT NULL) AS edited,
+                   (m.deleted_at IS NOT NULL) AS deleted,
                    reply.user_name AS "replyToName", reply.text AS "replyToText"
             FROM group_room_messages m
             LEFT JOIN group_room_messages reply ON reply.id = m.reply_to_id
@@ -815,7 +820,8 @@ io.on("connection", socket => {
         socket.join("group");
         const result = await query(`
             SELECT m.id::int, m.user_id AS "userId", m.user_name AS name,
-                   m.text, m.time, m.reply_to_id::int AS "replyToId",
+                   m.text, m.time, (m.edited_at IS NOT NULL) AS edited,
+                   (m.deleted_at IS NOT NULL) AS deleted,
                    reply.user_name AS "replyToName", reply.text AS "replyToText"
             FROM group_messages m
             LEFT JOIN group_messages reply ON reply.id = m.reply_to_id
@@ -885,6 +891,8 @@ io.on("connection", socket => {
         const result = await query(`
             SELECT m.id::int, m.from_id AS "fromId", m.from_name AS "fromName",
                    m.to_id AS "toId", m.text, m.time,
+                   (m.edited_at IS NOT NULL) AS edited,
+                   (m.deleted_at IS NOT NULL) AS deleted,
                    m.reply_to_id::int AS "replyToId",
                    reply.from_name AS "replyToName", reply.text AS "replyToText"
             FROM private_messages m
@@ -959,7 +967,8 @@ io.on("connection", socket => {
         socket.join(`chatroom:${roomId}`);
         const result = await query(`
             SELECT m.id::int, m.user_id AS "userId", m.user_name AS "userName",
-                   m.text, m.time, m.reply_to_id::int AS "replyToId",
+                   m.text, m.time, (m.edited_at IS NOT NULL) AS edited,
+                   (m.deleted_at IS NOT NULL) AS deleted,
                    reply.user_name AS "replyToName", reply.text AS "replyToText"
             FROM group_room_messages m
             LEFT JOIN group_room_messages reply ON reply.id = m.reply_to_id
@@ -1011,6 +1020,115 @@ io.on("connection", socket => {
             replyToName: reply && reply.replyToName,
             replyToText: reply && reply.replyToText,
             clientId
+        });
+    }));
+
+    socket.on("edit group message", guard(async data => {
+        const messageId = Number(data && data.messageId);
+        const text = safeText(data && data.text);
+        if (!Number.isInteger(messageId) || !text) return;
+        const result = await query(`
+            UPDATE group_messages
+            SET text = $1, edited_at = NOW()
+            WHERE id = $2 AND user_id = $3 AND deleted_at IS NULL
+            RETURNING id::int
+        `, [text, messageId, userId]);
+        if (!result.rowCount) return;
+        io.to("group").emit("group message updated", {
+            id: result.rows[0].id, text, edited: true, deleted: false
+        });
+    }));
+
+    socket.on("delete group message", guard(async data => {
+        const messageId = Number(data && data.messageId);
+        if (!Number.isInteger(messageId)) return;
+        const result = await query(`
+            UPDATE group_messages
+            SET text = '삭제된 메시지', deleted_at = NOW(), edited_at = NULL
+            WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
+            RETURNING id::int
+        `, [messageId, userId]);
+        if (!result.rowCount) return;
+        io.to("group").emit("group message updated", {
+            id: result.rows[0].id,
+            text: "삭제된 메시지",
+            edited: false,
+            deleted: true
+        });
+    }));
+
+    socket.on("edit private message", guard(async data => {
+        const messageId = Number(data && data.messageId);
+        const text = safeText(data && data.text);
+        if (!Number.isInteger(messageId) || !text) return;
+        const result = await query(`
+            UPDATE private_messages
+            SET text = $1, edited_at = NOW()
+            WHERE id = $2 AND from_id = $3 AND deleted_at IS NULL
+            RETURNING id::int, from_id, to_id
+        `, [text, messageId, userId]);
+        if (!result.rowCount) return;
+        const row = result.rows[0];
+        io.to(`private:${row.from_id}`).to(`private:${row.to_id}`)
+            .emit("private message updated", {
+                id: row.id, text, edited: true, deleted: false
+            });
+    }));
+
+    socket.on("delete private message", guard(async data => {
+        const messageId = Number(data && data.messageId);
+        if (!Number.isInteger(messageId)) return;
+        const result = await query(`
+            UPDATE private_messages
+            SET text = '삭제된 메시지', deleted_at = NOW(), edited_at = NULL
+            WHERE id = $1 AND from_id = $2 AND deleted_at IS NULL
+            RETURNING id::int, from_id, to_id
+        `, [messageId, userId]);
+        if (!result.rowCount) return;
+        const row = result.rows[0];
+        io.to(`private:${row.from_id}`).to(`private:${row.to_id}`)
+            .emit("private message updated", {
+                id: row.id,
+                text: "삭제된 메시지",
+                edited: false,
+                deleted: true
+            });
+    }));
+
+    socket.on("edit chat room message", guard(async data => {
+        const messageId = Number(data && data.messageId);
+        const roomId = Number(data && data.roomId);
+        const text = safeText(data && data.text);
+        if (!Number.isInteger(messageId) || !Number.isInteger(roomId) || !text) return;
+        const result = await query(`
+            UPDATE group_room_messages
+            SET text = $1, edited_at = NOW()
+            WHERE id = $2 AND room_id = $3 AND user_id = $4 AND deleted_at IS NULL
+            RETURNING id::int
+        `, [text, messageId, roomId, userId]);
+        if (!result.rowCount) return;
+        io.to(`chatroom:${roomId}`).emit("chat room message updated", {
+            id: result.rows[0].id, roomId, text, edited: true, deleted: false
+        });
+    }));
+
+    socket.on("delete chat room message", guard(async data => {
+        const messageId = Number(data && data.messageId);
+        const roomId = Number(data && data.roomId);
+        if (!Number.isInteger(messageId) || !Number.isInteger(roomId)) return;
+        const result = await query(`
+            UPDATE group_room_messages
+            SET text = '삭제된 메시지', deleted_at = NOW(), edited_at = NULL
+            WHERE id = $1 AND room_id = $2 AND user_id = $3 AND deleted_at IS NULL
+            RETURNING id::int
+        `, [messageId, roomId, userId]);
+        if (!result.rowCount) return;
+        io.to(`chatroom:${roomId}`).emit("chat room message updated", {
+            id: result.rows[0].id,
+            roomId,
+            text: "삭제된 메시지",
+            edited: false,
+            deleted: true
         });
     }));
 });

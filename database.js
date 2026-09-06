@@ -123,6 +123,18 @@ async function initializeDatabase() {
             ADD COLUMN IF NOT EXISTS client_id TEXT;
         ALTER TABLE group_room_messages
             ADD COLUMN IF NOT EXISTS client_id TEXT;
+        ALTER TABLE group_messages
+            ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ;
+        ALTER TABLE group_messages
+            ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+        ALTER TABLE private_messages
+            ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ;
+        ALTER TABLE private_messages
+            ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+        ALTER TABLE group_room_messages
+            ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ;
+        ALTER TABLE group_room_messages
+            ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 
         CREATE INDEX IF NOT EXISTS group_messages_reply_idx
             ON group_messages (reply_to_id);

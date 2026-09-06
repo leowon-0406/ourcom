@@ -109,6 +109,9 @@ body {
 .message.pending { opacity: .62; }
 .message.failed .time { color: #ef4444; font-weight: bold; }
 .retry-button { margin-left: 6px; border: 0; border-radius: 7px; padding: 4px 7px; color: white; background: #ef4444; cursor: pointer; }
+.message-action { margin-left: 5px; padding: 3px 6px; border: 1px solid #d1d5db; border-radius: 7px; background: white; color: #4b5563; font-size: 11px; cursor: pointer; }
+.edited-label { margin-left: 5px; color: #9ca3af; font-size: 10px; }
+.message.deleted .message-text { color: #9ca3af; font-style: italic; }
 .connection-status { display: none; padding: 7px; background: #fef3c7; color: #92400e; text-align: center; font-size: 13px; }
 
 .message.mine {
@@ -438,6 +441,7 @@ function appendReplyReference(bubble, message) {
     const reference = document.createElement("button");
     reference.type = "button";
     reference.className = "reply-reference";
+    reference.dataset.replyToId = message.replyToId;
     const name = document.createElement("strong");
     name.textContent = message.replyToName || "원문";
     const text = document.createElement("span");
@@ -635,8 +639,18 @@ function addMessage(message) {
     appendReplyReference(bubble, message);
 
     const messageText = document.createElement("span");
+    messageText.className = "message-text";
     messageText.textContent = message.text;
     bubble.appendChild(messageText);
+
+    if (message.edited && !message.deleted) {
+        const edited = document.createElement("span");
+        edited.className = "edited-label";
+        edited.textContent = "(수정됨)";
+        bubble.appendChild(edited);
+    }
+
+    if (message.deleted) div.classList.add("deleted");
 
 
     const time =
@@ -673,8 +687,23 @@ function addMessage(message) {
     replyButton.className = "reply-button";
     replyButton.textContent = "↩ 답장";
     replyButton.onclick = () => startReply(message);
-    replyButton.disabled = Boolean(message.pending);
+    replyButton.disabled = Boolean(message.pending || message.deleted);
     div.appendChild(replyButton);
+
+    if (message.userId === currentUser.id && !message.pending && !message.deleted) {
+        const actions = document.createElement("span");
+        actions.className = "owner-actions";
+        const edit = document.createElement("button");
+        edit.className = "message-action";
+        edit.textContent = "수정";
+        edit.onclick = () => editMessage(message);
+        const remove = document.createElement("button");
+        remove.className = "message-action";
+        remove.textContent = "삭제";
+        remove.onclick = () => deleteMessage(message);
+        actions.append(edit, remove);
+        div.appendChild(actions);
+    }
 
 
     container.appendChild(
@@ -685,6 +714,45 @@ function addMessage(message) {
     container.scrollTop =
         container.scrollHeight;
 
+}
+
+function editMessage(message) {
+    const element = document.querySelector(`[data-message-id="${Number(message.id)}"]`);
+    const current = element?.querySelector(".message-text")?.textContent || message.text;
+    const text = prompt("수정할 메시지를 입력하세요.", current);
+    if (text === null || !text.trim() || text.trim() === current) return;
+    socket.emit("edit chat room message", {
+        roomId, messageId: message.id, text: text.trim()
+    });
+}
+
+function deleteMessage(message) {
+    if (!confirm("이 메시지를 삭제할까요?")) return;
+    socket.emit("delete chat room message", { roomId, messageId: message.id });
+}
+
+function applyMessageUpdate(update) {
+    if (Number(update.roomId) !== Number(roomId)) return;
+    const element = document.querySelector(`[data-message-id="${Number(update.id)}"]`);
+    if (element) {
+        const text = element.querySelector(".message-text");
+        if (text) text.textContent = update.text;
+        element.querySelector(".edited-label")?.remove();
+        if (update.edited && !update.deleted) {
+            const label = document.createElement("span");
+            label.className = "edited-label";
+            label.textContent = "(수정됨)";
+            element.querySelector(".bubble")?.appendChild(label);
+        }
+        if (update.deleted) {
+            element.classList.add("deleted");
+            element.querySelector(".owner-actions")?.remove();
+            const reply = element.querySelector(".reply-button");
+            if (reply) reply.disabled = true;
+        }
+    }
+    document.querySelectorAll(`[data-reply-to-id="${Number(update.id)}"] span`)
+        .forEach(reference => { reference.textContent = update.text; });
 }
 
 function prependMessages(messages) {
@@ -889,6 +957,8 @@ async function startChat() {
         "chat-room-read-update",
         scheduleReadCountUpdate
     );
+
+    socket.on("chat room message updated", applyMessageUpdate);
 
 
     socket.on(
