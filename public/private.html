@@ -94,6 +94,8 @@
 
         .message.pending { opacity: .62; }
         .message.failed .time { color: #ef4444; font-weight: bold; }
+        .retry-button { margin-left: 6px; border: 0; border-radius: 7px; padding: 4px 7px; color: white; background: #ef4444; cursor: pointer; }
+        .connection-status { display: none; padding: 7px; background: #fef3c7; color: #92400e; text-align: center; font-size: 13px; }
 
         .message.mine {
             text-align: right;
@@ -299,6 +301,8 @@
 
 <div class="chat">
 
+    <div id="connectionStatus" class="connection-status">서버에 다시 연결하는 중...</div>
+
     <div
         id="messages"
         class="messages"
@@ -352,6 +356,9 @@ let socket = null;
 let replyingTo = null;
 
 let readCountTimer = null;
+let hasMoreMessages = true;
+let loadingOlder = false;
+const pendingMessages = new Map();
 
 function scheduleReadCountUpdate() {
     clearTimeout(readCountTimer);
@@ -367,7 +374,36 @@ function watchPendingMessage(clientId) {
         target.classList.add("failed");
         const time = target.querySelector(".time");
         if (time) time.textContent = "전송 지연";
+        if (!target.querySelector(".retry-button")) {
+            const retry = document.createElement("button");
+            retry.className = "retry-button";
+            retry.textContent = "다시 보내기";
+            retry.onclick = () => retryPendingMessage(clientId);
+            target.appendChild(retry);
+        }
     }, 8000);
+}
+
+function retryPendingMessage(clientId) {
+    const payload = pendingMessages.get(clientId);
+    if (!payload || !socket || !socket.connected) return;
+    const target = Array.from(document.querySelectorAll(".message[data-client-id]"))
+        .find(element => element.dataset.clientId === clientId);
+    if (target) {
+        target.classList.remove("failed");
+        target.classList.add("pending");
+        target.querySelector(".retry-button")?.remove();
+        const time = target.querySelector(".time");
+        if (time) time.textContent = "다시 전송 중";
+    }
+    socket.emit("private message", payload);
+    watchPendingMessage(clientId);
+}
+
+function visibleMessageIds() {
+    return Array.from(document.querySelectorAll(".message:not(.pending)"))
+        .map(element => Number(element.dataset.messageId))
+        .filter(Number.isInteger);
 }
 
 function startReply(message) {
@@ -534,6 +570,9 @@ function addMessage(message) {
             "messages"
         );
 
+    if (Number.isInteger(Number(message.id)) &&
+        document.querySelector(`[data-message-id="${Number(message.id)}"]`)) return;
+
 
     const empty =
         container.querySelector(
@@ -638,8 +677,45 @@ function addMessage(message) {
 
 }
 
+function prependMessages(messages) {
+    const container = document.getElementById("messages");
+    const oldHeight = container.scrollHeight;
+    const fragment = document.createDocumentFragment();
+    messages.forEach(message => {
+        if (!document.querySelector(`[data-message-id="${Number(message.id)}"]`)) {
+            const beforeHeight = container.scrollHeight;
+            addMessage(message);
+            const added = container.lastElementChild;
+            if (added) fragment.appendChild(added);
+            void beforeHeight;
+        }
+    });
+    container.insertBefore(fragment, container.firstChild);
+    container.scrollTop = container.scrollHeight - oldHeight;
+}
+
+async function loadOlderMessages() {
+    if (!hasMoreMessages || loadingOlder) return;
+    const firstId = visibleMessageIds().sort((a, b) => a - b)[0];
+    if (!firstId) return;
+    loadingOlder = true;
+    try {
+        const response = await fetch(`/api/private-messages/${encodeURIComponent(friendId)}?before=${firstId}`);
+        const data = await response.json();
+        if (data.success) {
+            prependMessages(data.messages);
+            hasMoreMessages = data.hasMore;
+            markMessagesRead(data.messages);
+        }
+    } finally {
+        loadingOlder = false;
+    }
+}
+
 async function updateMessageReadCounts() {
-    const response = await fetch(`/api/private-message-status/${encodeURIComponent(friendId)}`);
+    const ids = visibleMessageIds();
+    if (!ids.length) return;
+    const response = await fetch(`/api/private-message-status/${encodeURIComponent(friendId)}?ids=${ids.join(",")}`);
     const data = await response.json();
     if (!data.success) return;
     document.querySelectorAll(".message").forEach(element => {
@@ -822,6 +898,8 @@ async function startChat() {
         "connect",
         () => {
 
+            document.getElementById("connectionStatus").style.display = "none";
+
             console.log(
                 "OURCOM 1:1 채팅 연결 완료"
             );
@@ -862,6 +940,7 @@ async function startChat() {
                 )
                     ? history.messages
                     : [];
+            hasMoreMessages = Boolean(history && history.hasMore);
 
             if (history && history.user) {
                 document.getElementById("friendName").textContent = history.user.name;
@@ -926,6 +1005,7 @@ async function startChat() {
             if (pending && message.fromId === currentUser.id) {
                 pending.remove();
                 addMessage(message);
+                pendingMessages.delete(message.clientId);
             } else {
                 addMessage(message);
             }
@@ -955,6 +1035,13 @@ async function startChat() {
         "private-read-update",
         scheduleReadCountUpdate
     );
+
+    socket.on("disconnect", () => {
+        document.getElementById("connectionStatus").style.display = "block";
+    });
+    socket.on("connect_error", () => {
+        document.getElementById("connectionStatus").style.display = "block";
+    });
 
 
     /* =====================================
@@ -1009,22 +1096,14 @@ async function startChat() {
         });
 
 
-        socket.emit(
-            "private message",
-            {
-                toId:
-                    friendId,
-
-                text:
-                    text,
-
-                replyToId:
-                    reply ? reply.id : null,
-
-                clientId:
-                    clientId
-            }
-        );
+        const payload = {
+            toId: friendId,
+            text,
+            replyToId: reply ? reply.id : null,
+            clientId
+        };
+        pendingMessages.set(clientId, payload);
+        socket.emit("private message", payload);
 
         watchPendingMessage(clientId);
 
@@ -1046,6 +1125,10 @@ async function startChat() {
             "click",
             sendMessage
         );
+
+    document.getElementById("messages").addEventListener("scroll", event => {
+        if (event.currentTarget.scrollTop < 40) loadOlderMessages();
+    });
 
 
     document

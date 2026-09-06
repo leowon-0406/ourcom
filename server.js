@@ -81,6 +81,34 @@ function safeText(value, maxLength = 2000) {
         : "";
 }
 
+const loginAttempts = new Map();
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = 5;
+
+function loginAttemptKey(req, id) {
+    return `${req.ip}:${id || "unknown"}`;
+}
+
+function messagePage(rows) {
+    return {
+        messages: rows.slice(0, 50).reverse(),
+        hasMore: rows.length > 50
+    };
+}
+
+function beforeId(value) {
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function requestedMessageIds(req) {
+    return String(req.query.ids || "")
+        .split(",")
+        .map(Number)
+        .filter(Number.isInteger)
+        .slice(0, 500);
+}
+
 async function createAdmin() {
     const id = process.env.ADMIN_ID || "leowon0406";
     const name = process.env.ADMIN_NAME || "원준영";
@@ -107,6 +135,19 @@ app.post("/api/login", asyncHandler(async (req, res) => {
     const password = typeof req.body.password === "string"
         ? req.body.password
         : "";
+    const attemptKey = loginAttemptKey(req, id);
+    const now = Date.now();
+    const previous = loginAttempts.get(attemptKey);
+    const attempt = previous && now - previous.startedAt < LOGIN_WINDOW_MS
+        ? previous
+        : { count: 0, startedAt: now };
+
+    if (attempt.count >= LOGIN_MAX_ATTEMPTS) {
+        return res.status(429).json({
+            success: false,
+            message: "로그인 시도가 너무 많습니다. 15분 후 다시 시도해주세요."
+        });
+    }
 
     if (!id || !password) {
         return res.status(400).json({
@@ -125,11 +166,15 @@ app.post("/api/login", asyncHandler(async (req, res) => {
         : account && password === account.password;
 
     if (!passwordMatches) {
+        attempt.count += 1;
+        loginAttempts.set(attemptKey, attempt);
         return res.status(401).json({
             success: false,
             message: "아이디 또는 비밀번호가 올바르지 않습니다."
         });
     }
+
+    loginAttempts.delete(attemptKey);
 
     const user = { id: account.id, name: account.name, role: account.role };
     req.session.user = user;
@@ -211,15 +256,18 @@ app.delete("/api/admin/users/:id", adminOnly, asyncHandler(async (req, res) => {
 }));
 
 app.get("/api/group-messages", requireLogin, asyncHandler(async (req, res) => {
+    const before = beforeId(req.query.before);
     const result = await query(`
         SELECT m.id::int, m.user_id AS "userId", m.user_name AS name,
                m.text, m.time, m.reply_to_id::int AS "replyToId",
                reply.user_name AS "replyToName", reply.text AS "replyToText"
         FROM group_messages m
         LEFT JOIN group_messages reply ON reply.id = m.reply_to_id
-        ORDER BY m.id ASC
-    `);
-    res.json({ success: true, messages: result.rows });
+        WHERE ($1::bigint IS NULL OR m.id < $1)
+        ORDER BY m.id DESC
+        LIMIT 51
+    `, [before]);
+    res.json({ success: true, ...messagePage(result.rows) });
 }));
 
 app.post("/api/group-read", requireLogin, asyncHandler(async (req, res) => {
@@ -244,16 +292,20 @@ app.post("/api/group-read", requireLogin, asyncHandler(async (req, res) => {
 }));
 
 app.get("/api/group-unread-counts", requireLogin, asyncHandler(async (req, res) => {
+    const ids = requestedMessageIds(req);
+    if (!ids.length) return res.json({ success: true, counts: {} });
     const result = await query(`
         SELECT m.id::int,
                GREATEST(
-                   (SELECT COUNT(*) FROM users) - 1 - COUNT(r.user_id),
+                   (SELECT COUNT(*) FROM users u WHERE u.created_at <= m.created_at)
+                   - 1 - COUNT(r.user_id),
                    0
                )::int AS count
         FROM group_messages m
         LEFT JOIN group_reads r ON r.message_id = m.id
-        GROUP BY m.id
-    `);
+        WHERE m.id = ANY($1::bigint[])
+        GROUP BY m.id, m.created_at
+    `, [ids]);
     const counts = Object.fromEntries(result.rows.map(row => [row.id, row.count]));
     res.json({ success: true, counts });
 }));
@@ -266,6 +318,7 @@ app.get("/api/group-message/:messageId/unread-users", requireLogin,
             FROM users u
             JOIN group_messages m ON m.id = $1
             WHERE u.id <> m.user_id
+              AND u.created_at <= m.created_at
               AND NOT EXISTS (
                   SELECT 1 FROM group_reads r
                   WHERE r.message_id = m.id AND r.user_id = u.id
@@ -280,6 +333,7 @@ app.get("/api/private-messages/:userId", requireLogin,
     asyncHandler(async (req, res) => {
         const me = req.session.user.id;
         const other = req.params.userId;
+        const before = beforeId(req.query.before);
         const userResult = await query(
             "SELECT id, name, role FROM users WHERE id = $1",
             [other]
@@ -300,11 +354,13 @@ app.get("/api/private-messages/:userId", requireLogin,
                    reply.from_name AS "replyToName", reply.text AS "replyToText"
             FROM private_messages m
             LEFT JOIN private_messages reply ON reply.id = m.reply_to_id
-            WHERE (m.from_id = $1 AND m.to_id = $2)
-               OR (m.from_id = $2 AND m.to_id = $1)
-            ORDER BY m.id ASC
-        `, [me, other]);
-        res.json({ success: true, user: otherUser, messages: result.rows });
+            WHERE ((m.from_id = $1 AND m.to_id = $2)
+               OR (m.from_id = $2 AND m.to_id = $1))
+              AND ($3::bigint IS NULL OR m.id < $3)
+            ORDER BY m.id DESC
+            LIMIT 51
+        `, [me, other, before]);
+        res.json({ success: true, user: otherUser, ...messagePage(result.rows) });
     })
 );
 
@@ -415,15 +471,18 @@ app.get("/api/private-message-status/:userId", requireLogin,
     asyncHandler(async (req, res) => {
         const me = req.session.user.id;
         const other = req.params.userId;
+        const ids = requestedMessageIds(req);
+        if (!ids.length) return res.json({ success: true, counts: {} });
         const result = await query(`
             SELECT m.id::int,
                    CASE WHEN r.message_id IS NULL THEN 1 ELSE 0 END AS count
             FROM private_messages m
             LEFT JOIN private_reads r
               ON r.message_id = m.id AND r.user_id = m.to_id
-            WHERE (m.from_id = $1 AND m.to_id = $2)
-               OR (m.from_id = $2 AND m.to_id = $1)
-        `, [me, other]);
+            WHERE ((m.from_id = $1 AND m.to_id = $2)
+               OR (m.from_id = $2 AND m.to_id = $1))
+              AND m.id = ANY($3::bigint[])
+        `, [me, other, ids]);
         const counts = Object.fromEntries(
             result.rows.map(row => [row.id, Number(row.count)])
         );
@@ -548,6 +607,7 @@ app.get("/api/chat-rooms/:roomId", requireLogin,
 app.get("/api/chat-rooms/:roomId/messages", requireLogin,
     asyncHandler(async (req, res) => {
         const roomId = Number(req.params.roomId);
+        const before = beforeId(req.query.before);
         const member = await query(
             "SELECT 1 FROM group_room_members WHERE room_id = $1 AND user_id = $2",
             [roomId, req.session.user.id]
@@ -565,9 +625,11 @@ app.get("/api/chat-rooms/:roomId/messages", requireLogin,
             FROM group_room_messages m
             LEFT JOIN group_room_messages reply ON reply.id = m.reply_to_id
             WHERE m.room_id = $1
-            ORDER BY m.id ASC
-        `, [roomId]);
-        res.json({ success: true, messages: result.rows });
+              AND ($2::bigint IS NULL OR m.id < $2)
+            ORDER BY m.id DESC
+            LIMIT 51
+        `, [roomId, before]);
+        res.json({ success: true, ...messagePage(result.rows) });
     })
 );
 
@@ -609,6 +671,8 @@ app.get("/api/chat-rooms/:roomId/unread-counts", requireLogin,
         if (!member.rowCount) {
             return res.status(403).json({ success: false });
         }
+        const ids = requestedMessageIds(req);
+        if (!ids.length) return res.json({ success: true, counts: {} });
         const result = await query(`
             SELECT m.id::int,
                    GREATEST(
@@ -618,9 +682,9 @@ app.get("/api/chat-rooms/:roomId/unread-counts", requireLogin,
                    )::int AS count
             FROM group_room_messages m
             LEFT JOIN group_room_reads r ON r.message_id = m.id
-            WHERE m.room_id = $1
+            WHERE m.room_id = $1 AND m.id = ANY($2::bigint[])
             GROUP BY m.id
-        `, [roomId]);
+        `, [roomId, ids]);
         const counts = Object.fromEntries(result.rows.map(row => [row.id, row.count]));
         res.json({ success: true, counts });
     })
@@ -654,6 +718,43 @@ app.get("/api/chat-rooms/:roomId/message/:messageId/unread-users", requireLogin,
         res.json({ success: true, users: result.rows });
     })
 );
+
+app.get("/api/unread-summary", requireLogin, asyncHandler(async (req, res) => {
+    const userId = req.session.user.id;
+    const result = await query(`
+        SELECT
+            (SELECT COUNT(*)::int
+             FROM group_messages m
+             WHERE m.user_id <> $1
+               AND m.created_at >= (SELECT created_at FROM users WHERE id = $1)
+               AND NOT EXISTS (
+                   SELECT 1 FROM group_reads r
+                   WHERE r.message_id = m.id AND r.user_id = $1
+               )) AS "globalCount",
+            (SELECT COUNT(*)::int
+             FROM private_messages m
+             WHERE m.to_id = $1
+               AND NOT EXISTS (
+                   SELECT 1 FROM private_reads r
+                   WHERE r.message_id = m.id AND r.user_id = $1
+               )) AS "privateCount",
+            (SELECT COUNT(*)::int
+             FROM group_room_messages m
+             JOIN group_room_members member
+               ON member.room_id = m.room_id AND member.user_id = $1
+             WHERE m.user_id <> $1
+               AND NOT EXISTS (
+                   SELECT 1 FROM group_room_reads r
+                   WHERE r.message_id = m.id AND r.user_id = $1
+               )) AS "roomCount"
+    `, [userId]);
+    const counts = result.rows[0];
+    res.json({
+        success: true,
+        ...counts,
+        hasUnread: counts.globalCount + counts.privateCount + counts.roomCount > 0
+    });
+}));
 
 app.delete("/api/chat-rooms/:roomId/leave", requireLogin,
     asyncHandler(async (req, res) => {
@@ -718,9 +819,10 @@ io.on("connection", socket => {
                    reply.user_name AS "replyToName", reply.text AS "replyToText"
             FROM group_messages m
             LEFT JOIN group_messages reply ON reply.id = m.reply_to_id
-            ORDER BY m.id ASC
+            ORDER BY m.id DESC
+            LIMIT 51
         `);
-        socket.emit("group history", result.rows);
+        socket.emit("group history", messagePage(result.rows));
     }));
 
     socket.on("group message", guard(async value => {
@@ -739,15 +841,19 @@ io.on("connection", socket => {
         }
         const time = chatTime();
         const result = await query(`
-            INSERT INTO group_messages (user_id, user_name, text, time, reply_to_id)
-            VALUES ($1, $2, $3, $4, $5) RETURNING id::int
-        `, [userId, socket.user.name, text, time, reply && reply.id]);
+            INSERT INTO group_messages
+                (user_id, user_name, text, time, reply_to_id, client_id)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (user_id, client_id) WHERE client_id IS NOT NULL
+            DO UPDATE SET client_id = EXCLUDED.client_id
+            RETURNING id::int, time
+        `, [userId, socket.user.name, text, time, reply && reply.id, clientId]);
         io.to("group").emit("group message", {
             id: result.rows[0].id,
             userId,
             name: socket.user.name,
             text,
-            time,
+            time: result.rows[0].time,
             replyToId: reply && reply.id,
             replyToName: reply && reply.replyToName,
             replyToText: reply && reply.replyToText,
@@ -785,11 +891,13 @@ io.on("connection", socket => {
             LEFT JOIN private_messages reply ON reply.id = m.reply_to_id
             WHERE (m.from_id = $1 AND m.to_id = $2)
                OR (m.from_id = $2 AND m.to_id = $1)
-            ORDER BY m.id ASC
+            ORDER BY m.id DESC
+            LIMIT 51
         `, [userId, otherId]);
+        const page = messagePage(result.rows);
         socket.emit("private history", {
             user: otherResult.rows[0],
-            messages: result.rows
+            ...page
         });
     }));
 
@@ -816,16 +924,19 @@ io.on("connection", socket => {
         const time = chatTime();
         const result = await query(`
             INSERT INTO private_messages
-                (from_id, from_name, to_id, text, time, reply_to_id)
-            VALUES ($1, $2, $3, $4, $5, $6) RETURNING id::int
-        `, [userId, socket.user.name, toId, text, time, reply && reply.id]);
+                (from_id, from_name, to_id, text, time, reply_to_id, client_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (from_id, client_id) WHERE client_id IS NOT NULL
+            DO UPDATE SET client_id = EXCLUDED.client_id
+            RETURNING id::int, time
+        `, [userId, socket.user.name, toId, text, time, reply && reply.id, clientId]);
         const message = {
             id: result.rows[0].id,
             fromId: userId,
             fromName: socket.user.name,
             toId,
             text,
-            time,
+            time: result.rows[0].time,
             replyToId: reply && reply.id,
             replyToName: reply && reply.replyToName,
             replyToText: reply && reply.replyToText,
@@ -853,9 +964,10 @@ io.on("connection", socket => {
             FROM group_room_messages m
             LEFT JOIN group_room_messages reply ON reply.id = m.reply_to_id
             WHERE m.room_id = $1
-            ORDER BY m.id ASC
+            ORDER BY m.id DESC
+            LIMIT 51
         `, [roomId]);
-        socket.emit("chat room history", { roomId, messages: result.rows });
+        socket.emit("chat room history", { roomId, ...messagePage(result.rows) });
     }));
 
     socket.on("chat room message", guard(async data => {
@@ -882,16 +994,19 @@ io.on("connection", socket => {
         const time = chatTime();
         const result = await query(`
             INSERT INTO group_room_messages
-                (room_id, user_id, user_name, text, time, reply_to_id)
-            VALUES ($1, $2, $3, $4, $5, $6) RETURNING id::int
-        `, [roomId, userId, socket.user.name, text, time, reply && reply.id]);
+                (room_id, user_id, user_name, text, time, reply_to_id, client_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (room_id, user_id, client_id) WHERE client_id IS NOT NULL
+            DO UPDATE SET client_id = EXCLUDED.client_id
+            RETURNING id::int, time
+        `, [roomId, userId, socket.user.name, text, time, reply && reply.id, clientId]);
         io.to(`chatroom:${roomId}`).emit("chat room message", {
             id: result.rows[0].id,
             roomId,
             userId,
             userName: socket.user.name,
             text,
-            time,
+            time: result.rows[0].time,
             replyToId: reply && reply.id,
             replyToName: reply && reply.replyToName,
             replyToText: reply && reply.replyToText,

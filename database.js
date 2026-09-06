@@ -115,6 +115,14 @@ async function initializeDatabase() {
             ADD COLUMN IF NOT EXISTS reply_to_id BIGINT;
         ALTER TABLE group_room_messages
             ADD COLUMN IF NOT EXISTS reply_to_id BIGINT;
+        ALTER TABLE users
+            ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+        ALTER TABLE group_messages
+            ADD COLUMN IF NOT EXISTS client_id TEXT;
+        ALTER TABLE private_messages
+            ADD COLUMN IF NOT EXISTS client_id TEXT;
+        ALTER TABLE group_room_messages
+            ADD COLUMN IF NOT EXISTS client_id TEXT;
 
         CREATE INDEX IF NOT EXISTS group_messages_reply_idx
             ON group_messages (reply_to_id);
@@ -122,6 +130,18 @@ async function initializeDatabase() {
             ON private_messages (reply_to_id);
         CREATE INDEX IF NOT EXISTS group_room_messages_reply_idx
             ON group_room_messages (reply_to_id);
+        CREATE INDEX IF NOT EXISTS group_messages_page_idx
+            ON group_messages (id DESC);
+        CREATE INDEX IF NOT EXISTS private_messages_conversation_idx
+            ON private_messages (from_id, to_id, id DESC);
+        CREATE INDEX IF NOT EXISTS group_room_messages_page_idx
+            ON group_room_messages (room_id, id DESC);
+        CREATE UNIQUE INDEX IF NOT EXISTS group_messages_client_idx
+            ON group_messages (user_id, client_id) WHERE client_id IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS private_messages_client_idx
+            ON private_messages (from_id, client_id) WHERE client_id IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS group_room_messages_client_idx
+            ON group_room_messages (room_id, user_id, client_id) WHERE client_id IS NOT NULL;
     `);
 }
 
