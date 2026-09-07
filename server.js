@@ -179,10 +179,10 @@ const LOGIN_MAX_ATTEMPTS = 5;
 const REGISTER_WINDOW_MS = 10 * 60 * 1000;
 const REGISTER_MAX_ATTEMPTS = 10;
 const GAME_RULES = Object.freeze({
-    reaction: { minMs: 1200, maxMs: 15_000, maxScore: 950 },
-    snake: { minMs: 1000, maxMs: 30 * 60_000, maxScore: 50_000 },
-    obstacle: { minMs: 1000, maxMs: 30 * 60_000, maxScore: 100_000 },
-    mole: { minMs: 15_000, maxMs: 60_000, maxScore: 5_000 }
+    reaction: { minMs: 1200, maxMs: 15_000, minScore: 80, maxScore: 10_000 },
+    snake: { minMs: 1000, maxMs: 30 * 60_000, minScore: 0, maxScore: 50_000 },
+    obstacle: { minMs: 1000, maxMs: 30 * 60_000, minScore: 0, maxScore: 18_000 },
+    mole: { minMs: 15_000, maxMs: 60_000, minScore: 0, maxScore: 200 }
 });
 
 function loginAttemptKey(req, id) {
@@ -952,9 +952,9 @@ app.post("/api/games/score", requireLogin, asyncHandler(async (req, res) => {
         const run = runResult.rows[0];
         const rule = GAME_RULES[run.game];
         const elapsedMs = Number(run.elapsedMs);
-        if (!rule || elapsedMs < rule.minMs || elapsedMs > rule.maxMs || score > rule.maxScore) return false;
+        if (!rule || elapsedMs < rule.minMs || elapsedMs > rule.maxMs || score < rule.minScore || score > rule.maxScore) return false;
         await client.query("UPDATE game_runs SET completed_at = NOW() WHERE token = $1", [token]);
-        await client.query("INSERT INTO game_scores (user_id, game, score) VALUES ($1, $2, $3)", [req.session.user.id, run.game, score]);
+        await client.query("INSERT INTO game_scores (user_id, game, score, score_version) VALUES ($1, $2, $3, 2)", [req.session.user.id, run.game, score]);
         return run.game;
     });
     if (saved === null) return res.status(409).json({ success: false, message: "이미 제출했거나 만료된 게임입니다." });
@@ -963,27 +963,20 @@ app.post("/api/games/score", requireLogin, asyncHandler(async (req, res) => {
 }));
 
 app.get("/api/games/rankings", requireLogin, asyncHandler(async (req, res) => {
-    const game = safeText(req.query.game, 20) || "all";
-    if (game !== "all" && !GAME_RULES[game]) return res.status(400).json({ success: false, message: "지원하지 않는 게임입니다." });
-    const ranking = game === "all"
-        ? await query(`
-            WITH best AS (
-                SELECT user_id, game, MAX(score)::int AS score
-                FROM game_scores GROUP BY user_id, game
-            )
-            SELECT u.id AS "userId", u.name, SUM(best.score)::int AS score
-            FROM best JOIN users u ON u.id = best.user_id
-            GROUP BY u.id, u.name ORDER BY score DESC, u.name LIMIT 30
-        `)
-        : await query(`
-            SELECT u.id AS "userId", u.name, MAX(scores.score)::int AS score
-            FROM game_scores scores JOIN users u ON u.id = scores.user_id
-            WHERE scores.game = $1
-            GROUP BY u.id, u.name ORDER BY score DESC, u.name LIMIT 30
-        `, [game]);
+    const game = safeText(req.query.game, 20) || "reaction";
+    if (!GAME_RULES[game]) return res.status(400).json({ success: false, message: "지원하지 않는 게임입니다." });
+    const aggregate = game === "reaction" ? "MIN" : "MAX";
+    const direction = game === "reaction" ? "ASC" : "DESC";
+    const ranking = await query(`
+        SELECT u.id AS "userId", u.name, ${aggregate}(scores.score)::int AS score
+        FROM game_scores scores JOIN users u ON u.id = scores.user_id
+        WHERE scores.game = $1 AND scores.score_version = 2
+        GROUP BY u.id, u.name ORDER BY score ${direction}, u.name LIMIT 30
+    `, [game]);
     const mine = await query(`
-        SELECT game, MAX(score)::int AS score
-        FROM game_scores WHERE user_id = $1 GROUP BY game
+        SELECT game,
+               CASE WHEN game = 'reaction' THEN MIN(score) ELSE MAX(score) END::int AS score
+        FROM game_scores WHERE user_id = $1 AND score_version = 2 GROUP BY game
     `, [req.session.user.id]);
     res.json({ success: true, rankings: ranking.rows, bestScores: Object.fromEntries(mine.rows.map(row => [row.game, row.score])) });
 }));

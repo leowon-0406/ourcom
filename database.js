@@ -150,6 +150,7 @@ async function initializeDatabase() {
             user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
             game TEXT NOT NULL,
             score INTEGER NOT NULL,
+            score_version INTEGER NOT NULL DEFAULT 2,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
 
@@ -212,6 +213,10 @@ async function initializeDatabase() {
             ALTER COLUMN joined_at SET DEFAULT NOW();
         ALTER TABLE group_room_members
             ALTER COLUMN joined_at SET NOT NULL;
+        ALTER TABLE game_scores
+            ADD COLUMN IF NOT EXISTS score_version INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE game_scores
+            ALTER COLUMN score_version SET DEFAULT 2;
 
         CREATE INDEX IF NOT EXISTS group_messages_reply_idx
             ON group_messages (reply_to_id);
@@ -243,6 +248,8 @@ async function initializeDatabase() {
             ON registration_requests (status, created_at DESC);
         CREATE INDEX IF NOT EXISTS game_scores_game_score_idx
             ON game_scores (game, score DESC);
+        CREATE INDEX IF NOT EXISTS game_scores_version_idx
+            ON game_scores (score_version, game, score);
         CREATE INDEX IF NOT EXISTS game_scores_user_game_idx
             ON game_scores (user_id, game, score DESC);
         CREATE INDEX IF NOT EXISTS game_runs_user_idx

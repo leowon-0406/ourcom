@@ -604,8 +604,8 @@ async function loadUnreadSummary() {
         if (!data.success) return;
         document.getElementById("anyUnreadDot").style.display = data.hasAttention ? "inline-block" : "none";
         document.getElementById("globalUnreadDot").style.display = data.globalCount > 0 ? "block" : "none";
-        document.getElementById("privateUnreadDot").style.display = data.privateCount > 0 ? "block" : "none";
-        document.getElementById("roomUnreadDot").style.display = data.roomCount > 0 ? "block" : "none";
+        document.getElementById("privateUnreadDot").style.display = data.privateCount + data.roomCount > 0 ? "block" : "none";
+        document.getElementById("roomUnreadDot").style.display = "none";
         document.getElementById("newFriendDot").style.display = data.newFriendCount > 0 ? "block" : "none";
         document.getElementById("adminRequestDot").style.display = data.pendingRegistrationCount > 0 ? "block" : "none";
     } catch (error) {
