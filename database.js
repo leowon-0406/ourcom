@@ -141,6 +141,10 @@ async function initializeDatabase() {
             ON private_messages (to_id, from_id, id);
         CREATE INDEX IF NOT EXISTS private_reads_user_idx
             ON private_reads (user_id, message_id);
+        CREATE INDEX IF NOT EXISTS group_reads_user_idx
+            ON group_reads (user_id, message_id);
+        CREATE INDEX IF NOT EXISTS group_room_reads_user_idx
+            ON group_room_reads (user_id, message_id);
         CREATE INDEX IF NOT EXISTS group_room_members_user_idx
             ON group_room_members (user_id, room_id);
         CREATE INDEX IF NOT EXISTS push_subscriptions_user_idx
@@ -201,6 +205,8 @@ async function initializeDatabase() {
             ON group_room_messages (reply_to_id);
         CREATE INDEX IF NOT EXISTS group_messages_page_idx
             ON group_messages (id DESC);
+        CREATE INDEX IF NOT EXISTS group_messages_created_idx
+            ON group_messages (created_at DESC);
         CREATE INDEX IF NOT EXISTS private_messages_conversation_idx
             ON private_messages (from_id, to_id, id DESC);
         CREATE INDEX IF NOT EXISTS private_messages_from_recent_idx

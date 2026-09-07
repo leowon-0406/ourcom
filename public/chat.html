@@ -1034,15 +1034,15 @@ async function markMessagesRead(messages) {
 
 async function startChat() {
 
-    const loggedIn =
-        await checkLogin();
+    const usersPromise = fetch("/api/users").then(response => response.json());
+    const loggedIn = await checkLogin();
 
     if (!loggedIn) {
         return;
     }
 
     try {
-        const users = await fetch("/api/users").then(response => response.json());
+        const users = await usersPromise;
         displayNames = Object.fromEntries((users.users || []).map(user => [user.id, user.displayName || user.name]));
         displayNames[currentUser.id] = currentUser.name;
     } catch (error) {

@@ -932,20 +932,12 @@ function closeUnreadModal(event) {
 
 async function startChat() {
 
-    const loggedIn =
-        await checkLogin();
+    const [loggedIn, roomLoaded] = await Promise.all([
+        checkLogin(),
+        loadRoom()
+    ]);
 
-
-    if (!loggedIn) {
-        return;
-    }
-
-
-    const roomLoaded =
-        await loadRoom();
-
-
-    if (!roomLoaded) {
+    if (!loggedIn || !roomLoaded) {
         return;
     }
 
