@@ -144,14 +144,7 @@ input[type="text"] {
 .friend input {
     width: 18px;
     height: 18px;
-}
-
-.avatar {
-    margin-left: 10px;
-
     margin-right: 12px;
-
-    font-size: 23px;
 }
 
 .name {
@@ -414,12 +407,10 @@ async function loadFriends() {
                     value="${escapeHtml(user.id)}"
                 >
 
-                <div class="avatar">${escapeHtml(user.name.slice(0, 1))}</div>
-
                 <div>
 
                     <div class="name">
-                        ${escapeHtml(user.name)}
+                        ${escapeHtml(user.displayName || user.name)}
                     </div>
 
                     <div class="id">

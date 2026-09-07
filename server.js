@@ -1327,10 +1327,10 @@ app.patch("/api/chat-rooms/:roomId", requireLogin, asyncHandler(async (req, res)
     }
     const result = await query(`
         UPDATE group_rooms SET name = $1
-        WHERE id = $2 AND creator_id = $3
+        WHERE id = $2 AND (creator_id = $3 OR $4 = 'admin')
         RETURNING id::int, name
-    `, [name, roomId, req.session.user.id]);
-    if (!result.rowCount) return res.status(403).json({ success: false, message: "방장만 이름을 변경할 수 있습니다." });
+    `, [name, roomId, req.session.user.id, req.session.user.role]);
+    if (!result.rowCount) return res.status(403).json({ success: false, message: "방장 또는 관리자만 이름을 변경할 수 있습니다." });
     io.to(`chatroom:${roomId}`).emit("chat room updated", { roomId });
     res.json({ success: true, room: result.rows[0] });
 }));
@@ -1338,8 +1338,8 @@ app.patch("/api/chat-rooms/:roomId", requireLogin, asyncHandler(async (req, res)
 app.post("/api/chat-rooms/:roomId/members", requireLogin, asyncHandler(async (req, res) => {
     const roomId = Number(req.params.roomId);
     const memberId = safeText(req.body.userId, 80);
-    const owner = await query("SELECT 1 FROM group_rooms WHERE id = $1 AND creator_id = $2", [roomId, req.session.user.id]);
-    if (!owner.rowCount) return res.status(403).json({ success: false, message: "방장만 친구를 초대할 수 있습니다." });
+    const owner = await query("SELECT 1 FROM group_rooms WHERE id = $1 AND (creator_id = $2 OR $3 = 'admin')", [roomId, req.session.user.id, req.session.user.role]);
+    if (!owner.rowCount) return res.status(403).json({ success: false, message: "방장 또는 관리자만 친구를 초대할 수 있습니다." });
     const user = await query("SELECT id, name FROM users WHERE id = $1", [memberId]);
     if (!user.rowCount) return res.status(404).json({ success: false, message: "사용자를 찾을 수 없습니다." });
     const added = await query(`
@@ -1357,9 +1357,10 @@ app.post("/api/chat-rooms/:roomId/members", requireLogin, asyncHandler(async (re
 app.delete("/api/chat-rooms/:roomId/members/:userId", requireLogin, asyncHandler(async (req, res) => {
     const roomId = Number(req.params.roomId);
     const memberId = req.params.userId;
-    const owner = await query("SELECT creator_id FROM group_rooms WHERE id = $1 AND creator_id = $2", [roomId, req.session.user.id]);
-    if (!owner.rowCount) return res.status(403).json({ success: false, message: "방장만 멤버를 내보낼 수 있습니다." });
-    if (memberId === req.session.user.id) return res.status(400).json({ success: false, message: "방장은 권한을 넘긴 후 나갈 수 있습니다." });
+    const owner = await query("SELECT creator_id FROM group_rooms WHERE id = $1 AND (creator_id = $2 OR $3 = 'admin')", [roomId, req.session.user.id, req.session.user.role]);
+    if (!owner.rowCount) return res.status(403).json({ success: false, message: "방장 또는 관리자만 멤버를 내보낼 수 있습니다." });
+    if (memberId === owner.rows[0].creator_id) return res.status(400).json({ success: false, message: "방장은 권한을 넘긴 후 내보낼 수 있습니다." });
+    if (memberId === req.session.user.id) return res.status(400).json({ success: false, message: "자신은 나가기 버튼을 이용해주세요." });
     const removed = await query(
         "DELETE FROM group_room_members WHERE room_id = $1 AND user_id = $2 RETURNING user_id",
         [roomId, memberId]
@@ -1378,10 +1379,10 @@ app.patch("/api/chat-rooms/:roomId/owner", requireLogin, asyncHandler(async (req
         UPDATE group_rooms rooms
         SET creator_id = members.user_id, creator_name = members.user_name
         FROM group_room_members members
-        WHERE rooms.id = $1 AND rooms.creator_id = $2
+        WHERE rooms.id = $1 AND (rooms.creator_id = $2 OR $4 = 'admin')
           AND members.room_id = rooms.id AND members.user_id = $3
         RETURNING rooms.id::int, rooms.creator_id AS "creatorId", rooms.creator_name AS "creatorName"
-    `, [roomId, req.session.user.id, newOwnerId]);
+    `, [roomId, req.session.user.id, newOwnerId, req.session.user.role]);
     if (!result.rowCount) return res.status(400).json({ success: false, message: "방장 권한을 넘길 멤버를 찾을 수 없습니다." });
     io.to(`chatroom:${roomId}`).emit("chat room updated", { roomId });
     res.json({ success: true, room: result.rows[0] });
