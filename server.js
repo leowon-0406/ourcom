@@ -167,8 +167,8 @@ const loginAttempts = new Map();
 const registrationAttempts = new Map();
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_ATTEMPTS = 5;
-const REGISTER_WINDOW_MS = 60 * 60 * 1000;
-const REGISTER_MAX_ATTEMPTS = 5;
+const REGISTER_WINDOW_MS = 10 * 60 * 1000;
+const REGISTER_MAX_ATTEMPTS = 10;
 
 function loginAttemptKey(req, id) {
     return `${req.ip}:${id || "unknown"}`;
@@ -334,13 +334,14 @@ app.post("/api/register", asyncHandler(async (req, res) => {
         return res.status(400).json({ success: false, message: "이름과 6자 이상의 비밀번호를 입력해주세요." });
     }
     const now = Date.now();
-    const previous = registrationAttempts.get(req.ip);
+    const registrationKey = `${req.ip}:${id.toLowerCase()}`;
+    const previous = registrationAttempts.get(registrationKey);
     const attempt = previous && now - previous.startedAt < REGISTER_WINDOW_MS ? previous : { count: 0, startedAt: now };
     if (attempt.count >= REGISTER_MAX_ATTEMPTS) {
-        return res.status(429).json({ success: false, message: "가입 요청이 너무 많습니다. 잠시 후 다시 시도해주세요." });
+        return res.status(429).json({ success: false, message: "같은 아이디로 가입 요청을 너무 많이 보냈습니다. 10분 후 다시 시도해주세요." });
     }
     attempt.count += 1;
-    registrationAttempts.set(req.ip, attempt);
+    registrationAttempts.set(registrationKey, attempt);
     const exists = await query(`
         SELECT 1 FROM users WHERE id = $1
         UNION ALL
