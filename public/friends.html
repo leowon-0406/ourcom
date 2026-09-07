@@ -12,7 +12,36 @@ function avatar(user){const image=user.profileImage&&user.profileImage.secureUrl
 function personRow(user){return `<div class="item" data-user="${esc(user.id)}">${avatar(user)}<div class="identity"><div class="name">${esc(user.displayName||user.name)}</div><div class="meta">@${esc(user.id)}${user.displayName!==user.name?` · 원래 이름 ${esc(user.name)}`:""}</div></div>${user.isNew?'<span class="dot" title="새 친구"></span>':""}${user.unreadCount?`<span class="badge">${user.unreadCount}</span>`:""}<button class="rename" data-rename="${esc(user.id)}">이름 설정</button></div>`}
 function bindPeople(container){container.querySelectorAll("[data-user]").forEach(row=>row.onclick=()=>location.href=`/private.html?id=${encodeURIComponent(row.dataset.user)}`);container.querySelectorAll("[data-rename]").forEach(button=>button.onclick=event=>{event.stopPropagation();renameFriend(button.dataset.rename)})}
 function matches(value,query){return String(value||"").toLocaleLowerCase("ko").includes(query)}
-function renderNavigation(){if(!navigation)return;const chatQuery=document.getElementById("chatSearch").value.trim().toLocaleLowerCase("ko"),friendQuery=document.getElementById("friendSearch").value.trim().toLocaleLowerCase("ko");const filteredChats=navigation.chats.filter(user=>[user.displayName,user.name,user.id].some(value=>matches(value,chatQuery))),filteredFriends=navigation.friends.filter(user=>[user.displayName,user.name,user.id].some(value=>matches(value,friendQuery))),filteredRooms=navigation.rooms.filter(room=>matches(room.name,chatQuery));const chats=document.getElementById("directChats"),friends=document.getElementById("friends"),rooms=document.getElementById("rooms");chats.innerHTML=filteredChats.length?filteredChats.map(personRow).join(""):`<div class="empty">${chatQuery?"검색 결과가 없습니다.":"채팅한 친구가 없습니다. 친구 탭에서 대화를 시작하세요."}</div>`;friends.innerHTML=filteredFriends.length?filteredFriends.map(personRow).join(""):`<div class="empty">${friendQuery?"검색 결과가 없습니다.":"등록된 친구가 없습니다."}</div>`;rooms.innerHTML=filteredRooms.length?filteredRooms.map(room=>`<div class="item" data-room="${room.id}"><div class="avatar">단</div><div class="identity"><div class="name">${esc(room.name)}</div><div class="meta">${room.memberCount}명 참여</div></div>${room.unreadCount?`<span class="badge">${room.unreadCount}</span>`:""}</div>`).join(""):`<div class="empty">${chatQuery?"검색 결과가 없습니다.":"참여 중인 단체방이 없습니다."}</div>`;bindPeople(chats);bindPeople(friends);rooms.querySelectorAll("[data-room]").forEach(row=>row.onclick=()=>location.href=`/group-room.html?id=${row.dataset.room}`);document.getElementById("newFriendDot").classList.toggle("hidden",!navigation.newFriendCount)}
+function friendSortGroup(value){const first=String(value||"").trim().charAt(0);if(/[가-힣ㄱ-ㅎㅏ-ㅣ]/.test(first))return 0;if(/[A-Za-z]/.test(first))return 1;if(/[0-9]/.test(first))return 2;return 3}
+function compareFriends(left,right){const leftName=left.displayName||left.name||left.id,rightName=right.displayName||right.name||right.id,leftGroup=friendSortGroup(leftName),rightGroup=friendSortGroup(rightName);if(leftGroup!==rightGroup)return leftGroup-rightGroup;return leftName.localeCompare(rightName,leftGroup===1?"en":"ko",{sensitivity:"base",numeric:true})}
+function renderNavigation(){
+    if(!navigation)return;
+    const chatQuery=document.getElementById("chatSearch").value.trim().toLocaleLowerCase("ko");
+    const friendQuery=document.getElementById("friendSearch").value.trim().toLocaleLowerCase("ko");
+    const filteredChats=navigation.chats.filter(user=>
+        [user.displayName,user.name,user.id].some(value=>matches(value,chatQuery))
+    );
+    const filteredFriends=navigation.friends.filter(user=>
+        [user.displayName,user.name,user.id].some(value=>matches(value,friendQuery))
+    ).sort(compareFriends);
+    const filteredRooms=navigation.rooms.filter(room=>matches(room.name,chatQuery));
+    const chats=document.getElementById("directChats");
+    const friends=document.getElementById("friends");
+    const rooms=document.getElementById("rooms");
+    chats.innerHTML=filteredChats.length
+        ?filteredChats.map(personRow).join("")
+        :`<div class="empty">${chatQuery?"검색 결과가 없습니다.":"채팅한 친구가 없습니다. 친구 탭에서 대화를 시작하세요."}</div>`;
+    friends.innerHTML=filteredFriends.length
+        ?filteredFriends.map(personRow).join("")
+        :`<div class="empty">${friendQuery?"검색 결과가 없습니다.":"등록된 친구가 없습니다."}</div>`;
+    rooms.innerHTML=filteredRooms.length
+        ?filteredRooms.map(room=>`<div class="item" data-room="${room.id}"><div class="avatar">단</div><div class="identity"><div class="name">${esc(room.name)}</div><div class="meta">${room.memberCount}명 참여</div></div>${room.unreadCount?`<span class="badge">${room.unreadCount}</span>`:""}</div>`).join("")
+        :`<div class="empty">${chatQuery?"검색 결과가 없습니다.":"참여 중인 단체방이 없습니다."}</div>`;
+    bindPeople(chats);
+    bindPeople(friends);
+    rooms.querySelectorAll("[data-room]").forEach(row=>row.onclick=()=>location.href=`/group-room.html?id=${row.dataset.room}`);
+    document.getElementById("newFriendDot").classList.toggle("hidden",!navigation.newFriendCount);
+}
 async function loadNavigation(){try{const response=await fetch("/api/navigation");if(response.status===401)return location.href="/";navigation=await response.json();if(!navigation.success)throw Error("목록을 불러오지 못했습니다.");renderNavigation()}catch(error){["directChats","friends","rooms"].forEach(id=>document.getElementById(id).textContent="목록을 불러오지 못했습니다.")}}
 async function renameFriend(id){const user=[...(navigation?.chats||[]),...(navigation?.friends||[])].find(item=>item.id===id);const alias=prompt("나에게만 보일 이름을 입력하세요. 비우면 원래 이름으로 돌아갑니다.",user?.displayName||"");if(alias===null)return;const response=await fetch(`/api/users/${encodeURIComponent(id)}/alias`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({alias:alias.trim()})});const data=await response.json();if(!data.success)return alert(data.message||"이름을 변경하지 못했습니다.");loadNavigation()}
 async function showTab(tab){const friend=tab==="friend";document.getElementById("chatView").classList.toggle("hidden",friend);document.getElementById("friendView").classList.toggle("hidden",!friend);document.getElementById("chatTab").classList.toggle("active",!friend);document.getElementById("friendTab").classList.toggle("active",friend);if(friend){document.getElementById("newFriendDot").classList.add("hidden");await fetch("/api/friends/seen",{method:"POST"})}}
