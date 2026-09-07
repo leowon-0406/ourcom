@@ -450,6 +450,25 @@ body {
         </div>
 
 
+        <!-- 미니게임 -->
+
+        <div
+            class="menu"
+            onclick="openGames()"
+        >
+
+            <div class="menu-title">
+                미니게임
+            </div>
+
+            <div class="menu-description">
+                네 가지 게임을 플레이하고
+                친구들과 랭킹을 겨뤄보세요.
+            </div>
+
+        </div>
+
+
         <!-- 관리자 -->
 
         <div
@@ -641,6 +660,10 @@ function openCreateGroup() {
     location.href =
         "/group-create.html";
 
+}
+
+function openGames() {
+    location.href = "/games.html";
 }
 
 

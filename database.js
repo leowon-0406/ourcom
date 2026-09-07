@@ -137,6 +137,22 @@ async function initializeDatabase() {
             reviewed_at TIMESTAMPTZ
         );
 
+        CREATE TABLE IF NOT EXISTS game_runs (
+            token TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
+            game TEXT NOT NULL,
+            started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            completed_at TIMESTAMPTZ
+        );
+
+        CREATE TABLE IF NOT EXISTS game_scores (
+            id BIGSERIAL PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
+            game TEXT NOT NULL,
+            score INTEGER NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
         CREATE INDEX IF NOT EXISTS private_messages_to_from_idx
             ON private_messages (to_id, from_id, id);
         CREATE INDEX IF NOT EXISTS private_reads_user_idx
@@ -225,6 +241,14 @@ async function initializeDatabase() {
         CREATE INDEX IF NOT EXISTS users_active_idx ON users (last_active_at DESC);
         CREATE INDEX IF NOT EXISTS registration_requests_status_idx
             ON registration_requests (status, created_at DESC);
+        CREATE INDEX IF NOT EXISTS game_scores_game_score_idx
+            ON game_scores (game, score DESC);
+        CREATE INDEX IF NOT EXISTS game_scores_user_game_idx
+            ON game_scores (user_id, game, score DESC);
+        CREATE INDEX IF NOT EXISTS game_runs_user_idx
+            ON game_runs (user_id, started_at DESC);
+        CREATE INDEX IF NOT EXISTS game_runs_started_idx
+            ON game_runs (started_at);
     `);
 }
 

@@ -178,6 +178,12 @@ const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_ATTEMPTS = 5;
 const REGISTER_WINDOW_MS = 10 * 60 * 1000;
 const REGISTER_MAX_ATTEMPTS = 10;
+const GAME_RULES = Object.freeze({
+    reaction: { minMs: 1200, maxMs: 15_000, maxScore: 950 },
+    snake: { minMs: 1000, maxMs: 30 * 60_000, maxScore: 50_000 },
+    obstacle: { minMs: 1000, maxMs: 30 * 60_000, maxScore: 100_000 },
+    mole: { minMs: 15_000, maxMs: 60_000, maxScore: 5_000 }
+});
 
 function loginAttemptKey(req, id) {
     return `${req.ip}:${id || "unknown"}`;
@@ -822,7 +828,8 @@ app.patch("/api/admin/users/:id/id", adminOnly, asyncHandler(async (req, res) =>
             ["group_rooms", "creator_id"], ["group_room_members", "user_id"],
             ["group_room_messages", "user_id"], ["group_room_reads", "user_id"],
             ["push_subscriptions", "user_id"], ["user_aliases", "owner_id"],
-            ["user_aliases", "target_id"], ["user_preferences", "user_id"]
+            ["user_aliases", "target_id"], ["user_preferences", "user_id"],
+            ["game_runs", "user_id"], ["game_scores", "user_id"]
         ];
         for (const [table, column] of updates) {
             await client.query(`UPDATE ${table} SET ${column} = $2 WHERE ${column} = $1`, [oldId, newId]);
@@ -913,6 +920,79 @@ app.delete("/api/admin/users/:id", adminOnly, asyncHandler(async (req, res) => {
     }
 
     await query("DELETE FROM users WHERE id = $1", [userId]);
+    res.json({ success: true });
+}));
+
+app.post("/api/games/start", requireLogin, asyncHandler(async (req, res) => {
+    const game = safeText(req.body.game, 20);
+    if (!GAME_RULES[game]) return res.status(400).json({ success: false, message: "지원하지 않는 게임입니다." });
+    const token = crypto.randomUUID();
+    await transaction(async client => {
+        await client.query("DELETE FROM game_runs WHERE started_at < NOW() - INTERVAL '1 day'");
+        await client.query("DELETE FROM game_runs WHERE user_id = $1 AND completed_at IS NULL", [req.session.user.id]);
+        await client.query("INSERT INTO game_runs (token, user_id, game) VALUES ($1, $2, $3)", [token, req.session.user.id, game]);
+    });
+    res.json({ success: true, token });
+}));
+
+app.post("/api/games/score", requireLogin, asyncHandler(async (req, res) => {
+    const token = safeText(req.body.token, 80);
+    const score = Number(req.body.score);
+    if (!token || !Number.isInteger(score) || score < 0) {
+        return res.status(400).json({ success: false, message: "올바른 게임 결과가 아닙니다." });
+    }
+    const saved = await transaction(async client => {
+        const runResult = await client.query(`
+            SELECT game, EXTRACT(EPOCH FROM (NOW() - started_at)) * 1000 AS "elapsedMs"
+            FROM game_runs
+            WHERE token = $1 AND user_id = $2 AND completed_at IS NULL
+            FOR UPDATE
+        `, [token, req.session.user.id]);
+        if (!runResult.rowCount) return null;
+        const run = runResult.rows[0];
+        const rule = GAME_RULES[run.game];
+        const elapsedMs = Number(run.elapsedMs);
+        if (!rule || elapsedMs < rule.minMs || elapsedMs > rule.maxMs || score > rule.maxScore) return false;
+        await client.query("UPDATE game_runs SET completed_at = NOW() WHERE token = $1", [token]);
+        await client.query("INSERT INTO game_scores (user_id, game, score) VALUES ($1, $2, $3)", [req.session.user.id, run.game, score]);
+        return run.game;
+    });
+    if (saved === null) return res.status(409).json({ success: false, message: "이미 제출했거나 만료된 게임입니다." });
+    if (saved === false) return res.status(400).json({ success: false, message: "게임 시간이나 점수가 올바르지 않아 저장하지 않았습니다." });
+    res.json({ success: true });
+}));
+
+app.get("/api/games/rankings", requireLogin, asyncHandler(async (req, res) => {
+    const game = safeText(req.query.game, 20) || "all";
+    if (game !== "all" && !GAME_RULES[game]) return res.status(400).json({ success: false, message: "지원하지 않는 게임입니다." });
+    const ranking = game === "all"
+        ? await query(`
+            WITH best AS (
+                SELECT user_id, game, MAX(score)::int AS score
+                FROM game_scores GROUP BY user_id, game
+            )
+            SELECT u.id AS "userId", u.name, SUM(best.score)::int AS score
+            FROM best JOIN users u ON u.id = best.user_id
+            GROUP BY u.id, u.name ORDER BY score DESC, u.name LIMIT 30
+        `)
+        : await query(`
+            SELECT u.id AS "userId", u.name, MAX(scores.score)::int AS score
+            FROM game_scores scores JOIN users u ON u.id = scores.user_id
+            WHERE scores.game = $1
+            GROUP BY u.id, u.name ORDER BY score DESC, u.name LIMIT 30
+        `, [game]);
+    const mine = await query(`
+        SELECT game, MAX(score)::int AS score
+        FROM game_scores WHERE user_id = $1 GROUP BY game
+    `, [req.session.user.id]);
+    res.json({ success: true, rankings: ranking.rows, bestScores: Object.fromEntries(mine.rows.map(row => [row.game, row.score])) });
+}));
+
+app.delete("/api/admin/game-scores", adminOnly, asyncHandler(async (req, res) => {
+    await transaction(async client => {
+        await client.query("DELETE FROM game_scores");
+        await client.query("DELETE FROM game_runs");
+    });
     res.json({ success: true });
 }));
 
