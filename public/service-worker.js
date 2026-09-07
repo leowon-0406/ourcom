@@ -1,4 +1,4 @@
-const CACHE_NAME = "ourcom-pwa-v3";
+const CACHE_NAME = "ourcom-pwa-v4";
 const APP_FILES = [
     "/offline.html",
     "/manifest.webmanifest",

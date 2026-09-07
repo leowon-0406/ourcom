@@ -169,6 +169,16 @@
             <button class="secondary-button" onclick="showLogin()">로그인으로 돌아가기</button>
         </div>
 
+        <div id="adminVerifyForm" class="hidden">
+            <h2 class="form-title">관리자 2차 인증</h2>
+            <div class="input-group">
+                <label for="adminCode">2차 인증번호</label>
+                <input id="adminCode" type="password" inputmode="numeric" maxlength="20" autocomplete="one-time-code" placeholder="인증번호 입력" onkeydown="handleAdminEnter(event)">
+            </div>
+            <button onclick="verifyAdmin()">인증하고 로그인</button>
+            <button class="secondary-button" onclick="cancelAdminVerify()">처음으로 돌아가기</button>
+        </div>
+
         <div id="message" class="message"></div>
 
         <div class="footer">
@@ -182,12 +192,14 @@
 
 function showRegister() {
     document.getElementById("loginForm").classList.add("hidden");
+    document.getElementById("adminVerifyForm").classList.add("hidden");
     document.getElementById("registerForm").classList.remove("hidden");
     document.getElementById("message").textContent = "";
 }
 
 function showLogin() {
     document.getElementById("registerForm").classList.add("hidden");
+    document.getElementById("adminVerifyForm").classList.add("hidden");
     document.getElementById("loginForm").classList.remove("hidden");
     document.getElementById("message").textContent = "";
 }
@@ -218,6 +230,48 @@ async function registerAccount() {
         message.style.color = "#ef4444";
         message.textContent = "서버와 연결할 수 없습니다.";
     }
+}
+
+async function verifyAdmin() {
+    const code = document.getElementById("adminCode").value.trim();
+    const message = document.getElementById("message");
+    if (!code) {
+        message.style.color = "#ef4444";
+        message.textContent = "2차 인증번호를 입력해주세요.";
+        return;
+    }
+    message.style.color = "#777";
+    message.textContent = "인증 중...";
+    try {
+        const response = await fetch("/api/login/admin-verify", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ code })
+        });
+        const data = await response.json();
+        if (!data.success) {
+            message.style.color = "#ef4444";
+            message.textContent = data.message;
+            return;
+        }
+        message.style.color = "#16a34a";
+        message.textContent = `환영합니다, ${data.user.name}님!`;
+        setTimeout(() => { location.href = "/main.html"; }, 300);
+    } catch {
+        message.style.color = "#ef4444";
+        message.textContent = "서버와 연결할 수 없습니다.";
+    }
+}
+
+function cancelAdminVerify() {
+    document.getElementById("adminVerifyForm").classList.add("hidden");
+    document.getElementById("loginForm").classList.remove("hidden");
+    document.getElementById("adminCode").value = "";
+    document.getElementById("message").textContent = "";
+}
+
+function handleAdminEnter(event) {
+    if (event.key === "Enter") verifyAdmin();
 }
 
 async function login() {
@@ -256,7 +310,15 @@ async function login() {
 
         const data = await response.json();
 
-        if (data.success) {
+        if (data.success && data.requiresSecondFactor) {
+
+            document.getElementById("loginForm").classList.add("hidden");
+            document.getElementById("adminVerifyForm").classList.remove("hidden");
+            document.getElementById("adminCode").focus();
+            message.style.color = "#374151";
+            message.textContent = "관리자 2차 인증번호를 입력해주세요.";
+
+        } else if (data.success) {
 
             message.style.color = "#16a34a";
             message.textContent =

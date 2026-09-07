@@ -688,18 +688,21 @@ function createMessageElement(
     replyButton.disabled = Boolean(message.pending || message.deleted);
     messageActions.appendChild(replyButton);
 
-    if (message.userId === currentUser.id && !message.pending && !message.deleted) {
+    if ((message.userId === currentUser.id || currentUser.role === "admin") && !message.pending && !message.deleted) {
         const actions = document.createElement("span");
         actions.className = "owner-actions";
-        const edit = document.createElement("button");
-        edit.className = "message-action";
-        edit.textContent = "수정";
-        edit.onclick = () => editMessage(message);
+        if (message.userId === currentUser.id) {
+            const edit = document.createElement("button");
+            edit.className = "message-action";
+            edit.textContent = "수정";
+            edit.onclick = () => editMessage(message);
+            actions.appendChild(edit);
+        }
         const remove = document.createElement("button");
         remove.className = "message-action";
         remove.textContent = "삭제";
         remove.onclick = () => deleteMessage(message);
-        actions.append(edit, remove);
+        actions.appendChild(remove);
         messageActions.appendChild(actions);
     }
 

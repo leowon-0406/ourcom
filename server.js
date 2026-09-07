@@ -24,6 +24,9 @@ if (isProduction && !process.env.SESSION_SECRET) {
 if (isProduction && !process.env.ADMIN_PASSWORD) {
     throw new Error("ADMIN_PASSWORD 환경 변수를 설정해주세요.");
 }
+if (isProduction && !process.env.ADMIN_2FA_CODE) {
+    throw new Error("ADMIN_2FA_CODE 환경 변수를 설정해주세요.");
+}
 
 app.set("trust proxy", 1);
 app.use(express.json({ limit: "100kb" }));
@@ -100,6 +103,12 @@ function safeText(value, maxLength = 2000) {
 
 function validUserId(value) {
     return /^[A-Za-z0-9._-]{3,30}$/.test(value);
+}
+
+function timingSafeTextEqual(left, right) {
+    const leftBuffer = Buffer.from(String(left || ""));
+    const rightBuffer = Buffer.from(String(right || ""));
+    return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
 }
 
 const CLOUDINARY_TYPES = new Set(["image", "video", "raw"]);
@@ -408,11 +417,45 @@ app.post("/api/login", asyncHandler(async (req, res) => {
     loginAttempts.delete(attemptKey);
 
     const user = { id: account.id, name: account.name, role: account.role };
+    if (account.role === "admin") {
+        delete req.session.user;
+        req.session.pendingAdmin = { user, expiresAt: Date.now() + 5 * 60 * 1000, attempts: 0 };
+        await new Promise((resolve, reject) =>
+            req.session.save(error => error ? reject(error) : resolve())
+        );
+        return res.json({ success: true, requiresSecondFactor: true });
+    }
+    delete req.session.pendingAdmin;
     req.session.user = user;
     await new Promise((resolve, reject) =>
         req.session.save(error => error ? reject(error) : resolve())
     );
     res.json({ success: true, user });
+}));
+
+app.post("/api/login/admin-verify", asyncHandler(async (req, res) => {
+    const pending = req.session.pendingAdmin;
+    if (!pending || !pending.user || pending.user.role !== "admin" || pending.expiresAt < Date.now()) {
+        delete req.session.pendingAdmin;
+        return res.status(401).json({ success: false, message: "인증 시간이 끝났습니다. 관리자 로그인을 다시 해주세요." });
+    }
+    if ((pending.attempts || 0) >= 5) {
+        delete req.session.pendingAdmin;
+        return res.status(429).json({ success: false, message: "2차 인증 시도가 너무 많습니다. 다시 로그인해주세요." });
+    }
+    const code = typeof req.body.code === "string" ? req.body.code.trim() : "";
+    const expected = process.env.ADMIN_2FA_CODE || "7812";
+    if (!timingSafeTextEqual(code, expected)) {
+        pending.attempts = (pending.attempts || 0) + 1;
+        req.session.pendingAdmin = pending;
+        return res.status(401).json({ success: false, message: "2차 인증번호가 올바르지 않습니다." });
+    }
+    req.session.user = pending.user;
+    delete req.session.pendingAdmin;
+    await new Promise((resolve, reject) =>
+        req.session.save(error => error ? reject(error) : resolve())
+    );
+    res.json({ success: true, user: req.session.user });
 }));
 
 app.get("/api/me", (req, res) => {
@@ -448,6 +491,22 @@ app.patch("/api/profile", requireLogin, asyncHandler(async (req, res) => {
     if (oldImage && (!profileImage || oldImage.publicId !== profileImage.publicId)) void destroyAttachment(oldImage);
     io.emit("profile updated", { userId: req.session.user.id });
     res.json({ success: true, profileImage });
+}));
+
+app.patch("/api/profile/password", requireLogin, asyncHandler(async (req, res) => {
+    const currentPassword = typeof req.body.currentPassword === "string" ? req.body.currentPassword : "";
+    const newPassword = typeof req.body.newPassword === "string" ? req.body.newPassword : "";
+    if (newPassword.length < 6 || newPassword.length > 100) {
+        return res.status(400).json({ success: false, message: "새 비밀번호는 6~100자로 입력해주세요." });
+    }
+    const result = await query("SELECT password FROM users WHERE id = $1", [req.session.user.id]);
+    const savedPassword = result.rows[0] && result.rows[0].password;
+    const matches = savedPassword && savedPassword.startsWith("$2")
+        ? await bcrypt.compare(currentPassword, savedPassword)
+        : savedPassword === currentPassword;
+    if (!matches) return res.status(401).json({ success: false, message: "현재 비밀번호가 올바르지 않습니다." });
+    await query("UPDATE users SET password = $1 WHERE id = $2", [await bcrypt.hash(newPassword, 12), req.session.user.id]);
+    res.json({ success: true, message: "비밀번호를 변경했습니다." });
 }));
 
 app.post("/api/cloudinary-signature", requireLogin, (req, res) => {
@@ -615,7 +674,7 @@ app.get("/api/navigation", requireLogin, asyncHandler(async (req, res) => {
             ...person,
             isNew: new Date(person.createdAt) > new Date(seenAt)
         })),
-        friends: people.filter(person => !person.lastMessageId).map(person => ({
+        friends: people.map(person => ({
             ...person,
             isNew: new Date(person.createdAt) > new Date(seenAt)
         })),
@@ -777,6 +836,68 @@ app.patch("/api/admin/users/:id/id", adminOnly, asyncHandler(async (req, res) =>
     `, [oldId, newId]).catch(() => {});
     io.to(`private:${oldId}`).emit("account id changed", { newId });
     io.emit("friends updated");
+    res.json({ success: true });
+}));
+
+app.patch("/api/admin/users/:id/name", adminOnly, asyncHandler(async (req, res) => {
+    const userId = req.params.id;
+    const name = safeText(req.body.name, 40);
+    const adminId = process.env.ADMIN_ID || "leowon0406";
+    if (userId === adminId || userId === req.session.user.id) {
+        return res.status(400).json({ success: false, message: "현재 관리자 이름은 이 화면에서 변경할 수 없습니다." });
+    }
+    if (!name) return res.status(400).json({ success: false, message: "이름을 입력해주세요." });
+    await transaction(async client => {
+        const updated = await client.query("UPDATE users SET name = $1 WHERE id = $2 RETURNING id", [name, userId]);
+        if (!updated.rowCount) {
+            const error = new Error("사용자를 찾을 수 없습니다.");
+            error.status = 404;
+            throw error;
+        }
+        await client.query("UPDATE group_messages SET user_name = $1 WHERE user_id = $2", [name, userId]);
+        await client.query("UPDATE private_messages SET from_name = $1 WHERE from_id = $2", [name, userId]);
+        await client.query("UPDATE group_rooms SET creator_name = $1 WHERE creator_id = $2", [name, userId]);
+        await client.query("UPDATE group_room_members SET user_name = $1 WHERE user_id = $2", [name, userId]);
+        await client.query("UPDATE group_room_messages SET user_name = $1 WHERE user_id = $2", [name, userId]);
+    });
+    await query(`
+        UPDATE user_sessions
+        SET sess = jsonb_set(sess::jsonb, '{user,name}', to_jsonb($2::text))::json
+        WHERE sess->'user'->>'id' = $1
+    `, [userId, name]).catch(() => {});
+    const connectedSockets = await io.in(`private:${userId}`).fetchSockets();
+    connectedSockets.forEach(connected => {
+        connected.user.name = name;
+        if (connected.request.session && connected.request.session.user) connected.request.session.user.name = name;
+    });
+    io.to(`private:${userId}`).emit("profile updated", { userId, name });
+    io.emit("friends updated");
+    res.json({ success: true });
+}));
+
+app.patch("/api/admin/users/:id/password", adminOnly, asyncHandler(async (req, res) => {
+    const userId = req.params.id;
+    const newPassword = typeof req.body.newPassword === "string" ? req.body.newPassword : "";
+    const adminId = process.env.ADMIN_ID || "leowon0406";
+    if (userId === adminId || userId === req.session.user.id) {
+        return res.status(400).json({ success: false, message: "관리자 비밀번호는 Render 환경 변수에서 관리해주세요." });
+    }
+    if (newPassword.length < 6 || newPassword.length > 100) {
+        return res.status(400).json({ success: false, message: "임시 비밀번호는 6~100자로 입력해주세요." });
+    }
+    const result = await query("UPDATE users SET password = $1 WHERE id = $2 RETURNING id", [await bcrypt.hash(newPassword, 12), userId]);
+    if (!result.rowCount) return res.status(404).json({ success: false, message: "사용자를 찾을 수 없습니다." });
+    await query("DELETE FROM user_sessions WHERE sess->'user'->>'id' = $1", [userId]).catch(() => {});
+    io.in(`private:${userId}`).disconnectSockets(true);
+    res.json({ success: true, message: "임시 비밀번호로 재설정했습니다." });
+}));
+
+app.delete("/api/admin/users/:id/profile-image", adminOnly, asyncHandler(async (req, res) => {
+    const previous = await query(`SELECT profile_image AS "profileImage" FROM users WHERE id = $1`, [req.params.id]);
+    const result = await query("UPDATE users SET profile_image = NULL WHERE id = $1 RETURNING id", [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ success: false, message: "사용자를 찾을 수 없습니다." });
+    void destroyAttachment(previous.rows[0] && previous.rows[0].profileImage);
+    io.emit("profile updated", { userId: req.params.id });
     res.json({ success: true });
 }));
 
@@ -1851,9 +1972,9 @@ io.on("connection", socket => {
         const result = await query(`
             UPDATE group_messages
             SET text = '삭제된 메시지', deleted_at = NOW(), edited_at = NULL
-            WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
+            WHERE id = $1 AND (user_id = $2 OR $3 = 'admin') AND deleted_at IS NULL
             RETURNING id::int, attachment
-        `, [messageId, userId]);
+        `, [messageId, userId, socket.user.role]);
         if (!result.rowCount) return;
         void destroyAttachment(result.rows[0].attachment);
         io.to("group").emit("group message updated", {
