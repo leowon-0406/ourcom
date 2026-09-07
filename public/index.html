@@ -63,7 +63,7 @@
             font-weight: 600;
         }
 
-        input {
+        input, textarea {
             width: 100%;
             padding: 15px;
             margin: 0;
@@ -73,10 +73,12 @@
             outline: none;
         }
 
-        input:focus {
+        input:focus, textarea:focus {
             border-color: #4f46e5;
             box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
         }
+
+        textarea { min-height: 105px; resize: vertical; font-family: inherit; line-height: 1.45; }
 
         button {
             width: 100%;
@@ -165,6 +167,7 @@
             <div class="input-group"><label for="registerName">이름 (본명)</label><input id="registerName" maxlength="40" placeholder="본명을 입력하세요"></div>
             <div class="input-group"><label for="registerId">아이디</label><input id="registerId" maxlength="30" placeholder="영문·숫자 3자 이상"></div>
             <div class="input-group"><label for="registerPassword">비밀번호</label><input id="registerPassword" type="password" maxlength="100" placeholder="6자 이상"></div>
+            <div class="input-group"><label for="registerIntroduction">관리자에게 보내는 자기소개</label><textarea id="registerIntroduction" maxlength="300" placeholder="예: ○○중학교 1학년 ○반 홍길동입니다. 관리자와 같은 반 친구이며 OURCOM 가입을 요청합니다."></textarea></div>
             <button onclick="registerAccount()">승인 요청</button>
             <button class="secondary-button" onclick="showLogin()">로그인으로 돌아가기</button>
         </div>
@@ -209,11 +212,12 @@ async function registerAccount() {
     const body = {
         name: document.getElementById("registerName").value.trim(),
         id: document.getElementById("registerId").value.trim(),
-        password: document.getElementById("registerPassword").value
+        password: document.getElementById("registerPassword").value,
+        introduction: document.getElementById("registerIntroduction").value.trim()
     };
-    if (!body.name || !body.id || !body.password) {
+    if (!body.name || !body.id || !body.password || body.introduction.length < 10) {
         message.style.color = "#ef4444";
-        message.textContent = "모든 내용을 입력해주세요.";
+        message.textContent = "모든 내용을 입력하고 자기소개를 10자 이상 작성해주세요.";
         return;
     }
     message.style.color = "#777";
@@ -224,7 +228,7 @@ async function registerAccount() {
         message.style.color = data.success ? "#16a34a" : "#ef4444";
         message.textContent = data.message;
         if (data.success) {
-            ["registerName", "registerId", "registerPassword"].forEach(id => document.getElementById(id).value = "");
+            ["registerName", "registerId", "registerPassword", "registerIntroduction"].forEach(id => document.getElementById(id).value = "");
         }
     } catch (error) {
         message.style.color = "#ef4444";

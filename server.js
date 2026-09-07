@@ -341,12 +341,16 @@ async function createAdmin() {
 app.post("/api/register", asyncHandler(async (req, res) => {
     const id = safeText(req.body.id, 30);
     const name = safeText(req.body.name, 40);
+    const introduction = safeText(req.body.introduction, 300);
     const password = typeof req.body.password === "string" ? req.body.password : "";
     if (!validUserId(id)) {
         return res.status(400).json({ success: false, message: "아이디는 영문, 숫자, 점, 밑줄, 하이픈으로 3~30자만 사용할 수 있습니다." });
     }
     if (!name || name.length > 40 || password.length < 6 || password.length > 100) {
         return res.status(400).json({ success: false, message: "이름과 6자 이상의 비밀번호를 입력해주세요." });
+    }
+    if (introduction.length < 10) {
+        return res.status(400).json({ success: false, message: "관리자가 본인을 확인할 수 있도록 자기소개를 10자 이상 입력해주세요." });
     }
     const now = Date.now();
     const registrationKey = `${req.ip}:${id.toLowerCase()}`;
@@ -366,12 +370,12 @@ app.post("/api/register", asyncHandler(async (req, res) => {
     if (exists.rowCount) return res.status(409).json({ success: false, message: "이미 사용 중이거나 승인 대기 중인 아이디입니다." });
     const passwordHash = await bcrypt.hash(password, 12);
     await query(`
-        INSERT INTO registration_requests (id, name, password, status)
-        VALUES ($1, $2, $3, 'pending')
+        INSERT INTO registration_requests (id, name, password, introduction, status)
+        VALUES ($1, $2, $3, $4, 'pending')
         ON CONFLICT (id) DO UPDATE
-        SET name = EXCLUDED.name, password = EXCLUDED.password,
+        SET name = EXCLUDED.name, password = EXCLUDED.password, introduction = EXCLUDED.introduction,
             status = 'pending', created_at = NOW(), reviewed_at = NULL
-    `, [id, name, passwordHash]);
+    `, [id, name, passwordHash, introduction]);
     io.to(`private:${process.env.ADMIN_ID || "leowon0406"}`).emit("registration request");
     res.json({ success: true, message: "가입 승인 요청을 보냈습니다. 관리자가 승인하면 로그인할 수 있습니다." });
 }));
@@ -712,7 +716,7 @@ app.get("/api/admin/users", adminOnly, asyncHandler(async (req, res) => {
 
 app.get("/api/admin/registration-requests", adminOnly, asyncHandler(async (req, res) => {
     const result = await query(`
-        SELECT id, name, created_at AS "createdAt"
+        SELECT id, name, introduction, created_at AS "createdAt"
         FROM registration_requests WHERE status = 'pending' ORDER BY created_at
     `);
     res.json({ success: true, requests: result.rows });

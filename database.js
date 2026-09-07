@@ -132,6 +132,7 @@ async function initializeDatabase() {
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             password TEXT NOT NULL,
+            introduction TEXT,
             status TEXT NOT NULL DEFAULT 'pending',
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             reviewed_at TIMESTAMPTZ
@@ -217,6 +218,8 @@ async function initializeDatabase() {
             ADD COLUMN IF NOT EXISTS score_version INTEGER NOT NULL DEFAULT 1;
         ALTER TABLE game_scores
             ALTER COLUMN score_version SET DEFAULT 2;
+        ALTER TABLE registration_requests
+            ADD COLUMN IF NOT EXISTS introduction TEXT;
 
         CREATE INDEX IF NOT EXISTS group_messages_reply_idx
             ON group_messages (reply_to_id);
